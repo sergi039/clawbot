@@ -25,7 +25,10 @@ import { listSkillCommandsForAgents } from "../auto-reply/skill-commands.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../channels/command-gating.js";
 import { createReplyPrefixOptions } from "../channels/reply-prefix.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
-import { resolveTelegramCustomCommands } from "../config/telegram-custom-commands.js";
+import {
+  resolveTelegramCustomCommands,
+  TELEGRAM_COMMAND_NAME_PATTERN,
+} from "../config/telegram-custom-commands.js";
 import { danger, logVerbose } from "../globals.js";
 import { getChildLogger } from "../logging.js";
 import { readChannelAllowFromStore } from "../pairing/pairing-store.js";
@@ -335,10 +338,12 @@ export const registerTelegramNativeCommands = ({
     runtime.error?.(danger(issue));
   }
   const allCommandsFull: Array<{ command: string; description: string }> = [
-    ...nativeCommands.map((command) => ({
-      command: command.name,
-      description: command.description,
-    })),
+    ...nativeCommands
+      .map((command) => ({
+        command: command.name.replace(/-/g, "_"),
+        description: command.description,
+      }))
+      .filter(({ command }) => TELEGRAM_COMMAND_NAME_PATTERN.test(command)),
     ...(nativeEnabled ? pluginCatalog.commands : []),
     ...customCommands,
   ];
