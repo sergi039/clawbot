@@ -1184,12 +1184,21 @@ describe("runWithModelFallback provider status checks", () => {
   });
 
   it("skips anthropic when status.claude.com reports a major outage and a cross-provider fallback exists", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        status: { indicator: "major", description: "Major outage" },
-      }),
-    } as Response);
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return {
+        ok: true,
+        json: async () => ({
+          status: {
+            indicator: url.includes("status.claude.com") ? "major" : "none",
+            description: url.includes("status.claude.com")
+              ? "Major outage"
+              : "All Systems Operational",
+          },
+        }),
+      } as Response;
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const cfg = makeCfg({
@@ -1218,7 +1227,7 @@ describe("runWithModelFallback provider status checks", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(run).toHaveBeenCalledTimes(1);
     expect(run).toHaveBeenCalledWith("openai-codex", "gpt-5.2");
     expect(result.attempts[0]?.reason).toBe("timeout");
@@ -1257,6 +1266,93 @@ describe("runWithModelFallback provider status checks", () => {
     expect(result.result).toBe("ok");
     expect(run).toHaveBeenCalledTimes(1);
     expect(run).toHaveBeenCalledWith("anthropic", "claude-sonnet-4-6");
+    expect(result.attempts).toEqual([]);
+  });
+
+  it("skips openai-codex when status.openai.com reports a major outage and a cross-provider fallback exists", async () => {
+    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      return {
+        ok: true,
+        json: async () => ({
+          status: {
+            indicator: url.includes("status.openai.com") ? "major" : "none",
+            description: url.includes("status.openai.com")
+              ? "Major outage"
+              : "All Systems Operational",
+          },
+        }),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai-codex/gpt-5.3-codex",
+            fallbacks: ["anthropic/claude-sonnet-4-6"],
+          },
+        },
+      },
+    });
+
+    const run = vi.fn().mockImplementation(async (provider: string, model: string) => {
+      if (provider === "anthropic" && model === "claude-sonnet-4-6") {
+        return "ok";
+      }
+      throw new Error(`unexpected fallback candidate: ${provider}/${model}`);
+    });
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai-codex",
+      model: "gpt-5.3-codex",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("anthropic", "claude-sonnet-4-6");
+    expect(result.attempts[0]?.reason).toBe("timeout");
+    expect(result.attempts[0]?.error).toContain("status.openai.com");
+  });
+
+  it("does not skip openai-codex when only openai-family candidates exist", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: { indicator: "critical", description: "Critical outage" },
+      }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai-codex/gpt-5.3-codex",
+            fallbacks: ["openai/gpt-5.2"],
+          },
+        },
+      },
+    });
+
+    const run = vi.fn().mockResolvedValue("ok");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai-codex",
+      model: "gpt-5.3-codex",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("openai-codex", "gpt-5.3-codex");
     expect(result.attempts).toEqual([]);
   });
 });

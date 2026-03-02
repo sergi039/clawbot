@@ -60,7 +60,9 @@ const PROVIDER_STATUS_REQUEST_TIMEOUT_MS = 2_500;
 const PROVIDER_STATUS_CACHE_TTL_MS = 60_000;
 const PROVIDER_STATUS_MIN_CACHE_TTL_MS = 5_000;
 const PROVIDER_STATUS_MAX_CACHE_TTL_MS = 10 * 60_000;
-const ANTHROPIC_OUTAGE_INDICATORS = new Set(["major", "critical"]);
+const OPENAI_STATUS_ENDPOINT = "https://status.openai.com/api/v2/status.json";
+const STATUSPAGE_OUTAGE_INDICATORS = new Set(["major", "critical"]);
+const OPENAI_STATUS_PROVIDERS = new Set(["openai", "openai-codex", "openai-completions"]);
 const DISABLED_PROVIDER_STATUS_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
 const providerStatusCache = new Map<string, ProviderStatusCacheEntry>();
 
@@ -98,7 +100,14 @@ function formatAnthropicStatusMessage(indicator: string, description?: string): 
     : `status.claude.com reports ${indicator}`;
 }
 
-function parseAnthropicStatusPayload(payload: unknown): {
+function formatOpenAiStatusMessage(indicator: string, description?: string): string {
+  const detail = description?.trim();
+  return detail
+    ? `status.openai.com reports ${indicator}: ${detail}`
+    : `status.openai.com reports ${indicator}`;
+}
+
+function parseStatuspagePayload(payload: unknown): {
   indicator: string;
   description?: string;
 } | null {
@@ -138,12 +147,12 @@ async function fetchAnthropicOutageSnapshot(now: number): Promise<ProviderOutage
       return null;
     }
     const payload = (await response.json()) as unknown;
-    const parsed = parseAnthropicStatusPayload(payload);
+    const parsed = parseStatuspagePayload(payload);
     if (!parsed) {
       return null;
     }
     return {
-      unavailable: ANTHROPIC_OUTAGE_INDICATORS.has(parsed.indicator),
+      unavailable: STATUSPAGE_OUTAGE_INDICATORS.has(parsed.indicator),
       message: formatAnthropicStatusMessage(parsed.indicator, parsed.description),
       checkedAt: now,
       source: ANTHROPIC_STATUS_ENDPOINT,
@@ -153,6 +162,42 @@ async function fetchAnthropicOutageSnapshot(now: number): Promise<ProviderOutage
   }
 }
 
+async function fetchOpenAiOutageSnapshot(now: number): Promise<ProviderOutageSnapshot | null> {
+  if (typeof globalThis.fetch !== "function") {
+    return null;
+  }
+  try {
+    const response = await globalThis.fetch(OPENAI_STATUS_ENDPOINT, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(PROVIDER_STATUS_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as unknown;
+    const parsed = parseStatuspagePayload(payload);
+    if (!parsed) {
+      return null;
+    }
+    return {
+      unavailable: STATUSPAGE_OUTAGE_INDICATORS.has(parsed.indicator),
+      message: formatOpenAiStatusMessage(parsed.indicator, parsed.description),
+      checkedAt: now,
+      source: OPENAI_STATUS_ENDPOINT,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveProviderStatusScope(provider: string): string {
+  const normalizedProvider = normalizeProviderId(provider);
+  if (OPENAI_STATUS_PROVIDERS.has(normalizedProvider)) {
+    return "openai";
+  }
+  return normalizedProvider;
+}
+
 async function resolveProviderOutageSnapshot(
   provider: string,
   now: number,
@@ -160,21 +205,24 @@ async function resolveProviderOutageSnapshot(
   if (!isProviderStatusCheckEnabled()) {
     return null;
   }
-  const normalizedProvider = normalizeProviderId(provider);
-  if (normalizedProvider !== "anthropic") {
+  const providerStatusScope = resolveProviderStatusScope(provider);
+  if (providerStatusScope !== "anthropic" && providerStatusScope !== "openai") {
     return null;
   }
-  const cached = providerStatusCache.get(normalizedProvider);
+  const cached = providerStatusCache.get(providerStatusScope);
   if (cached && cached.expiresAt > now) {
     return cached.snapshot;
   }
 
-  const snapshot = await fetchAnthropicOutageSnapshot(now);
+  const snapshot =
+    providerStatusScope === "anthropic"
+      ? await fetchAnthropicOutageSnapshot(now)
+      : await fetchOpenAiOutageSnapshot(now);
   if (!snapshot) {
     return cached?.snapshot ?? null;
   }
 
-  providerStatusCache.set(normalizedProvider, {
+  providerStatusCache.set(providerStatusScope, {
     expiresAt: now + resolveProviderStatusCacheTtlMs(),
     snapshot,
   });
@@ -186,10 +234,11 @@ function hasCrossProviderCandidate(candidates: ModelCandidate[], index: number):
   if (!current) {
     return false;
   }
-  const currentProvider = normalizeProviderId(current.provider);
+  const currentProviderScope = resolveProviderStatusScope(current.provider);
   return candidates.some(
     (candidate, candidateIndex) =>
-      candidateIndex !== index && normalizeProviderId(candidate.provider) !== currentProvider,
+      candidateIndex !== index &&
+      resolveProviderStatusScope(candidate.provider) !== currentProviderScope,
   );
 }
 
