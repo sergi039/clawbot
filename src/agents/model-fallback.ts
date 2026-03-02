@@ -22,6 +22,7 @@ import {
   buildModelAliasIndex,
   modelKey,
   normalizeModelRef,
+  normalizeProviderId,
   resolveConfiguredModelRef,
   resolveModelRefFromString,
 } from "./model-selection.js";
@@ -41,6 +42,163 @@ type FallbackAttempt = {
   status?: number;
   code?: string;
 };
+
+type ProviderOutageSnapshot = {
+  unavailable: boolean;
+  message: string;
+  checkedAt: number;
+  source: string;
+};
+
+type ProviderStatusCacheEntry = {
+  expiresAt: number;
+  snapshot: ProviderOutageSnapshot;
+};
+
+const ANTHROPIC_STATUS_ENDPOINT = "https://status.claude.com/api/v2/status.json";
+const PROVIDER_STATUS_REQUEST_TIMEOUT_MS = 2_500;
+const PROVIDER_STATUS_CACHE_TTL_MS = 60_000;
+const PROVIDER_STATUS_MIN_CACHE_TTL_MS = 5_000;
+const PROVIDER_STATUS_MAX_CACHE_TTL_MS = 10 * 60_000;
+const ANTHROPIC_OUTAGE_INDICATORS = new Set(["major", "critical"]);
+const DISABLED_PROVIDER_STATUS_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
+const providerStatusCache = new Map<string, ProviderStatusCacheEntry>();
+
+function isProviderStatusCheckEnabled(): boolean {
+  const raw = String(process.env.OPENCLAW_PROVIDER_STATUS_CHECK ?? "")
+    .trim()
+    .toLowerCase();
+  if (raw) {
+    return !DISABLED_PROVIDER_STATUS_VALUES.has(raw);
+  }
+  if (process.env.VITEST || process.env.NODE_ENV === "test") {
+    return false;
+  }
+  return true;
+}
+
+function resolveProviderStatusCacheTtlMs(): number {
+  const parsed = Number.parseInt(
+    String(process.env.OPENCLAW_PROVIDER_STATUS_CACHE_TTL_MS ?? ""),
+    10,
+  );
+  if (!Number.isFinite(parsed)) {
+    return PROVIDER_STATUS_CACHE_TTL_MS;
+  }
+  return Math.min(
+    PROVIDER_STATUS_MAX_CACHE_TTL_MS,
+    Math.max(PROVIDER_STATUS_MIN_CACHE_TTL_MS, parsed),
+  );
+}
+
+function formatAnthropicStatusMessage(indicator: string, description?: string): string {
+  const detail = description?.trim();
+  return detail
+    ? `status.claude.com reports ${indicator}: ${detail}`
+    : `status.claude.com reports ${indicator}`;
+}
+
+function parseAnthropicStatusPayload(payload: unknown): {
+  indicator: string;
+  description?: string;
+} | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const status = (payload as { status?: unknown }).status;
+  if (!status || typeof status !== "object") {
+    return null;
+  }
+  const indicatorRaw = (status as { indicator?: unknown }).indicator;
+  if (typeof indicatorRaw !== "string") {
+    return null;
+  }
+  const indicator = indicatorRaw.trim().toLowerCase();
+  if (!indicator) {
+    return null;
+  }
+  const descriptionRaw = (status as { description?: unknown }).description;
+  const description =
+    typeof descriptionRaw === "string" && descriptionRaw.trim().length > 0
+      ? descriptionRaw.trim()
+      : undefined;
+  return { indicator, description };
+}
+
+async function fetchAnthropicOutageSnapshot(now: number): Promise<ProviderOutageSnapshot | null> {
+  if (typeof globalThis.fetch !== "function") {
+    return null;
+  }
+  try {
+    const response = await globalThis.fetch(ANTHROPIC_STATUS_ENDPOINT, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(PROVIDER_STATUS_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as unknown;
+    const parsed = parseAnthropicStatusPayload(payload);
+    if (!parsed) {
+      return null;
+    }
+    return {
+      unavailable: ANTHROPIC_OUTAGE_INDICATORS.has(parsed.indicator),
+      message: formatAnthropicStatusMessage(parsed.indicator, parsed.description),
+      checkedAt: now,
+      source: ANTHROPIC_STATUS_ENDPOINT,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveProviderOutageSnapshot(
+  provider: string,
+  now: number,
+): Promise<ProviderOutageSnapshot | null> {
+  if (!isProviderStatusCheckEnabled()) {
+    return null;
+  }
+  const normalizedProvider = normalizeProviderId(provider);
+  if (normalizedProvider !== "anthropic") {
+    return null;
+  }
+  const cached = providerStatusCache.get(normalizedProvider);
+  if (cached && cached.expiresAt > now) {
+    return cached.snapshot;
+  }
+
+  const snapshot = await fetchAnthropicOutageSnapshot(now);
+  if (!snapshot) {
+    return cached?.snapshot ?? null;
+  }
+
+  providerStatusCache.set(normalizedProvider, {
+    expiresAt: now + resolveProviderStatusCacheTtlMs(),
+    snapshot,
+  });
+  return snapshot;
+}
+
+function hasCrossProviderCandidate(candidates: ModelCandidate[], index: number): boolean {
+  const current = candidates[index];
+  if (!current) {
+    return false;
+  }
+  const currentProvider = normalizeProviderId(current.provider);
+  return candidates.some(
+    (candidate, candidateIndex) =>
+      candidateIndex !== index && normalizeProviderId(candidate.provider) !== currentProvider,
+  );
+}
+
+/** @internal – exposed for unit tests only */
+export const _providerStatusInternals = {
+  providerStatusCache,
+  resolveProviderOutageSnapshot,
+  isProviderStatusCheckEnabled,
+} as const;
 
 /**
  * Fallback abort check. Only treats explicit AbortError names as user aborts.
@@ -458,6 +616,21 @@ export async function runWithModelFallback<T>(params: {
 
   for (let i = 0; i < candidates.length; i += 1) {
     const candidate = candidates[i];
+    const now = Date.now();
+
+    const outageSnapshot = await resolveProviderOutageSnapshot(candidate.provider, now);
+    if (outageSnapshot?.unavailable && hasCrossProviderCandidate(candidates, i)) {
+      attempts.push({
+        provider: candidate.provider,
+        model: candidate.model,
+        error: outageSnapshot.message,
+        reason: "timeout",
+        status: 503,
+        code: "provider_status_outage",
+      });
+      continue;
+    }
+
     if (authStore) {
       const profileIds = resolveAuthProfileOrder({
         cfg: params.cfg,
@@ -471,7 +644,6 @@ export async function runWithModelFallback<T>(params: {
         const isPrimary = i === 0;
         const requestedModel =
           params.provider === candidate.provider && params.model === candidate.model;
-        const now = Date.now();
         const probeThrottleKey = resolveProbeThrottleKey(candidate.provider, params.agentDir);
         const decision = resolveCooldownDecision({
           candidate,

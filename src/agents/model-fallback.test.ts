@@ -2,13 +2,17 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import type { AuthProfileStore } from "./auth-profiles.js";
 import { saveAuthProfileStore } from "./auth-profiles.js";
 import { AUTH_STORE_VERSION } from "./auth-profiles/constants.js";
 import { isAnthropicBillingError } from "./live-auth-keys.js";
-import { runWithImageModelFallback, runWithModelFallback } from "./model-fallback.js";
+import {
+  _providerStatusInternals,
+  runWithImageModelFallback,
+  runWithModelFallback,
+} from "./model-fallback.js";
 import { makeModelFallbackCfg } from "./test-helpers/model-fallback-config-fixture.js";
 
 const makeCfg = makeModelFallbackCfg;
@@ -1158,6 +1162,102 @@ describe("runWithModelFallback", () => {
       expect(run).toHaveBeenNthCalledWith(1, "anthropic", "claude-sonnet-4-5"); // Rate limit allows attempt
       expect(run).toHaveBeenNthCalledWith(2, "groq", "llama-3.3-70b-versatile"); // Cross-provider works
     });
+  });
+});
+
+describe("runWithModelFallback provider status checks", () => {
+  const originalProviderStatusEnv = process.env.OPENCLAW_PROVIDER_STATUS_CHECK;
+
+  beforeEach(() => {
+    process.env.OPENCLAW_PROVIDER_STATUS_CHECK = "1";
+    _providerStatusInternals.providerStatusCache.clear();
+  });
+
+  afterEach(() => {
+    if (originalProviderStatusEnv === undefined) {
+      delete process.env.OPENCLAW_PROVIDER_STATUS_CHECK;
+    } else {
+      process.env.OPENCLAW_PROVIDER_STATUS_CHECK = originalProviderStatusEnv;
+    }
+    _providerStatusInternals.providerStatusCache.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it("skips anthropic when status.claude.com reports a major outage and a cross-provider fallback exists", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: { indicator: "major", description: "Major outage" },
+      }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "anthropic/claude-sonnet-4-6",
+            fallbacks: ["openai-codex/gpt-5.2"],
+          },
+        },
+      },
+    });
+
+    const run = vi.fn().mockImplementation(async (provider: string, model: string) => {
+      if (provider === "openai-codex" && model === "gpt-5.2") {
+        return "ok";
+      }
+      throw new Error(`unexpected fallback candidate: ${provider}/${model}`);
+    });
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("openai-codex", "gpt-5.2");
+    expect(result.attempts[0]?.reason).toBe("timeout");
+    expect(result.attempts[0]?.error).toContain("status.claude.com");
+  });
+
+  it("does not skip anthropic when only same-provider candidates exist", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: { indicator: "critical", description: "Critical outage" },
+      }),
+    } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "anthropic/claude-sonnet-4-6",
+            fallbacks: ["anthropic/claude-haiku-3-5"],
+          },
+        },
+      },
+    });
+
+    const run = vi.fn().mockResolvedValue("ok");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("anthropic", "claude-sonnet-4-6");
+    expect(result.attempts).toEqual([]);
   });
 });
 
