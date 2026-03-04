@@ -9,7 +9,6 @@ APP_PROCESS_PATTERN="OpenClaw.app/Contents/MacOS/OpenClaw"
 DEBUG_PROCESS_PATTERN="${ROOT_DIR}/apps/macos/.build/debug/OpenClaw"
 LOCAL_PROCESS_PATTERN="${ROOT_DIR}/apps/macos/.build-local/debug/OpenClaw"
 RELEASE_PROCESS_PATTERN="${ROOT_DIR}/apps/macos/.build/release/OpenClaw"
-LAUNCH_AGENT="${HOME}/Library/LaunchAgents/ai.openclaw.mac.plist"
 LOCK_KEY="$(printf '%s' "${ROOT_DIR}" | shasum -a 256 | cut -c1-8)"
 LOCK_DIR="${TMPDIR:-/tmp}/openclaw-restart-${LOCK_KEY}"
 LOCK_PID_FILE="${LOCK_DIR}/pid"
@@ -20,7 +19,7 @@ SIGN=0
 AUTO_DETECT_SIGNING=1
 GATEWAY_WAIT_SECONDS="${OPENCLAW_GATEWAY_WAIT_SECONDS:-0}"
 LAUNCHAGENT_DISABLE_MARKER="${HOME}/.openclaw/disable-launchagent"
-ATTACH_ONLY=1
+ATTACH_ONLY=0
 
 log()  { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -73,6 +72,20 @@ acquire_lock() {
 check_signing_keys() {
   security find-identity -p codesigning -v 2>/dev/null \
     | grep -Eq '(Developer ID Application|Apple Distribution|Apple Development)'
+}
+
+check_swift_toolchain_health() {
+  local devdir=""
+  devdir="$(xcode-select -p 2>/dev/null || true)"
+  if [[ -z "${devdir}" ]]; then
+    log "==> WARNING: xcode-select is not configured; swift build may fail."
+    return 0
+  fi
+  if [[ "${devdir}" == *"/CommandLineTools" ]]; then
+    log "==> WARNING: active developer dir is CommandLineTools (${devdir})."
+    log "==> WARNING: SwiftUI macro plugins may fail; select full Xcode if available."
+    log "==> WARNING: Example: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
+  fi
 }
 
 trap cleanup EXIT INT TERM
@@ -148,15 +161,11 @@ stop_launch_agent() {
   launchctl bootout gui/"$UID"/ai.openclaw.mac 2>/dev/null || true
 }
 
-# 1) Kill all running instances first.
-log "==> Killing existing OpenClaw instances"
-kill_all_openclaw
-stop_launch_agent
-
 # Bundle Gateway-hosted Canvas A2UI assets.
 run_step "bundle canvas a2ui" bash -lc "cd '${ROOT_DIR}' && pnpm canvas:a2ui:bundle"
 
-# 2) Rebuild into the same path the packager consumes (.build).
+# 1) Rebuild into the same path the packager consumes (.build).
+check_swift_toolchain_health
 run_step "clean build cache" bash -lc "cd '${ROOT_DIR}/apps/macos' && rm -rf .build .build-swift .swiftpm 2>/dev/null || true"
 run_step "swift build" bash -lc "cd '${ROOT_DIR}/apps/macos' && swift build -q --product OpenClaw"
 
@@ -183,7 +192,7 @@ elif [ "$SIGN" -eq 1 ]; then
   unset SIGN_IDENTITY
 fi
 
-# 3) Package app (no embedded gateway).
+# 2) Package app (no embedded gateway).
 run_step "package app" bash -lc "cd '${ROOT_DIR}' && SKIP_TSC=${SKIP_TSC:-1} '${ROOT_DIR}/scripts/package-mac-app.sh'"
 
 choose_app_bundle() {
@@ -243,6 +252,11 @@ ATTACH_ONLY_ARGS=()
 if [[ "$ATTACH_ONLY" -eq 1 ]]; then
   ATTACH_ONLY_ARGS+=(--args --attach-only)
 fi
+
+# 3) Swap to the rebuilt app only after successful build/package.
+log "==> Killing existing OpenClaw instances"
+kill_all_openclaw
+stop_launch_agent
 
 # 4) Launch the installed app in the foreground so the menu bar extra appears.
 # LaunchServices can inherit a huge environment from this shell (secrets, prompt vars, etc.).

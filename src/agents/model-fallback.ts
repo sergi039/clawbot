@@ -64,6 +64,9 @@ const OPENAI_STATUS_ENDPOINT = "https://status.openai.com/api/v2/status.json";
 const STATUSPAGE_OUTAGE_INDICATORS = new Set(["major", "critical"]);
 const OPENAI_STATUS_PROVIDERS = new Set(["openai", "openai-codex", "openai-completions"]);
 const DISABLED_PROVIDER_STATUS_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
+const OPENAI_PROVIDER = "openai";
+const OPENAI_CODEX_PROVIDER = "openai-codex";
+const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
 const providerStatusCache = new Map<string, ProviderStatusCacheEntry>();
 
 function isProviderStatusCheckEnabled(): boolean {
@@ -240,6 +243,54 @@ function hasCrossProviderCandidate(candidates: ModelCandidate[], index: number):
       candidateIndex !== index &&
       resolveProviderStatusScope(candidate.provider) !== currentProviderScope,
   );
+}
+
+function isOpenAiCodexModel(model: string): boolean {
+  return model.trim().toLowerCase().includes("codex");
+}
+
+function resolveProviderCandidate(params: {
+  candidate: ModelCandidate;
+  cfg: OpenClawConfig | undefined;
+  authStore: ReturnType<typeof ensureAuthProfileStore> | null;
+}): ModelCandidate {
+  if (!params.authStore) {
+    return params.candidate;
+  }
+  if (normalizeProviderId(params.candidate.provider) !== OPENAI_PROVIDER) {
+    return params.candidate;
+  }
+  if (!isOpenAiCodexModel(params.candidate.model)) {
+    return params.candidate;
+  }
+  if (String(process.env[OPENAI_API_KEY_ENV] ?? "").trim()) {
+    return params.candidate;
+  }
+
+  const hasOpenAiProfiles =
+    resolveAuthProfileOrder({
+      cfg: params.cfg,
+      store: params.authStore,
+      provider: OPENAI_PROVIDER,
+    }).length > 0;
+  if (hasOpenAiProfiles) {
+    return params.candidate;
+  }
+
+  const hasOpenAiCodexProfiles =
+    resolveAuthProfileOrder({
+      cfg: params.cfg,
+      store: params.authStore,
+      provider: OPENAI_CODEX_PROVIDER,
+    }).length > 0;
+  if (!hasOpenAiCodexProfiles) {
+    return params.candidate;
+  }
+
+  return {
+    provider: OPENAI_CODEX_PROVIDER,
+    model: params.candidate.model,
+  };
 }
 
 /** @internal – exposed for unit tests only */
@@ -664,7 +715,15 @@ export async function runWithModelFallback<T>(params: {
   const hasFallbackCandidates = candidates.length > 1;
 
   for (let i = 0; i < candidates.length; i += 1) {
-    const candidate = candidates[i];
+    const baseCandidate = candidates[i];
+    if (!baseCandidate) {
+      continue;
+    }
+    const candidate = resolveProviderCandidate({
+      candidate: baseCandidate,
+      cfg: params.cfg,
+      authStore,
+    });
     const now = Date.now();
 
     const outageSnapshot = await resolveProviderOutageSnapshot(candidate.provider, now);

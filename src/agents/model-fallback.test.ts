@@ -194,6 +194,121 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledWith("openai", "gpt-5.3-codex");
   });
 
+  it("prefers openai-codex for codex models when only codex auth is available", async () => {
+    const cfg = makeCfg();
+    const store: AuthProfileStore = {
+      version: AUTH_STORE_VERSION,
+      profiles: {
+        "openai-codex:default": {
+          type: "api_key",
+          provider: "openai-codex",
+          key: "test-key",
+        },
+      },
+    };
+    const run = vi.fn().mockResolvedValueOnce("ok");
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    try {
+      const result = await withTempAuthStore(store, async (tempDir) =>
+        runWithModelFallback({
+          cfg,
+          provider: "openai",
+          model: "gpt-5.3-codex",
+          agentDir: tempDir,
+          run,
+        }),
+      );
+
+      expect(result.result).toBe("ok");
+      expect(result.provider).toBe("openai-codex");
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(run).toHaveBeenCalledWith("openai-codex", "gpt-5.3-codex");
+    } finally {
+      if (previousOpenAiApiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+      }
+    }
+  });
+
+  it("keeps openai provider for codex models when openai auth exists", async () => {
+    const cfg = makeCfg();
+    const store: AuthProfileStore = {
+      version: AUTH_STORE_VERSION,
+      profiles: {
+        "openai:default": {
+          type: "api_key",
+          provider: "openai",
+          key: "test-key",
+        },
+        "openai-codex:default": {
+          type: "api_key",
+          provider: "openai-codex",
+          key: "test-key",
+        },
+      },
+    };
+    const run = vi.fn().mockResolvedValueOnce("ok");
+
+    const result = await withTempAuthStore(store, async (tempDir) =>
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.3-codex",
+        agentDir: tempDir,
+        run,
+      }),
+    );
+
+    expect(result.result).toBe("ok");
+    expect(result.provider).toBe("openai");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith("openai", "gpt-5.3-codex");
+  });
+
+  it("does not rewrite non-codex openai models to openai-codex", async () => {
+    const cfg = makeCfg();
+    const store: AuthProfileStore = {
+      version: AUTH_STORE_VERSION,
+      profiles: {
+        "openai-codex:default": {
+          type: "api_key",
+          provider: "openai-codex",
+          key: "test-key",
+        },
+      },
+    };
+    const run = vi.fn().mockResolvedValueOnce("ok");
+    const previousOpenAiApiKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    try {
+      const result = await withTempAuthStore(store, async (tempDir) =>
+        runWithModelFallback({
+          cfg,
+          provider: "openai",
+          model: "gpt-5.2",
+          agentDir: tempDir,
+          run,
+        }),
+      );
+
+      expect(result.result).toBe("ok");
+      expect(result.provider).toBe("openai");
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(run).toHaveBeenCalledWith("openai", "gpt-5.2");
+    } finally {
+      if (previousOpenAiApiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiApiKey;
+      }
+    }
+  });
+
   it("falls back on unrecognized errors when candidates remain", async () => {
     const cfg = makeCfg();
     const run = vi.fn().mockRejectedValueOnce(new Error("bad request")).mockResolvedValueOnce("ok");
