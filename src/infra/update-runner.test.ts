@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { withEnvAsync } from "../test-utils/env.js";
 import { pathExists } from "../utils.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
 import { runGatewayUpdate } from "./update-runner.js";
@@ -431,7 +432,7 @@ describe("runGatewayUpdate", () => {
     });
 
     const result = await runWithCommand(
-      async (argv, options) => {
+      async (argv) => {
         const key = argv.join(" ");
         if (key === `git -C ${tempDir} status --porcelain -- :!dist/control-ui/`) {
           statusChecks += 1;
@@ -441,7 +442,7 @@ describe("runGatewayUpdate", () => {
             code: 0,
           };
         }
-        return runner(argv, options);
+        return runner(argv);
       },
       { channel: "stable" },
     );

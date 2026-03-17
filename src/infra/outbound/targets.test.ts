@@ -656,7 +656,7 @@ describe("resolveSessionDeliveryTarget", () => {
             source: "file",
             provider: "filemain",
             id: "/channels/telegram/botToken",
-          },
+          } as unknown as string,
         },
       },
     };

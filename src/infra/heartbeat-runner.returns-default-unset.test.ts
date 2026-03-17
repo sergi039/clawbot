@@ -694,7 +694,7 @@ describe("runHeartbeatOnce", () => {
               source: "file",
               provider: "filemain",
               id: "/channels/telegram/botToken",
-            },
+            } as unknown as string,
           },
         },
         session: { store: storePath },

@@ -200,7 +200,14 @@ export async function maybeHandleModelDirectiveInfo(params: {
   allowedModelCatalog: Array<{ provider: string; id?: string; name?: string }>;
   resetModelOverride: boolean;
   surface?: string;
-  sessionEntry?: Pick<SessionEntry, "modelProvider" | "model">;
+  sessionEntry?: Pick<
+    SessionEntry,
+    | "modelProvider"
+    | "model"
+    | "fallbackNoticeSelectedModel"
+    | "fallbackNoticeActiveModel"
+    | "fallbackNoticeReason"
+  >;
 }): Promise<ReplyPayload | undefined> {
   if (!params.directives.hasModelDirective) {
     return undefined;

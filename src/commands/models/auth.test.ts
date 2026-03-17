@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { ProviderPlugin } from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
-import { OPENAI_CODEX_DEFAULT_MODEL } from "../openai-codex-model-default.js";
+const OPENAI_CODEX_DEFAULT_MODEL = "openai-codex/gpt-5.4";
 
 const mocks = vi.hoisted(() => ({
   clackCancel: vi.fn(),
