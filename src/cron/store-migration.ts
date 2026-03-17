@@ -28,16 +28,18 @@ function incrementIssue(issues: CronStoreIssues, key: CronStoreIssueKey) {
 }
 
 function normalizePayloadKind(payload: Record<string, unknown>) {
-  const raw = typeof payload.kind === "string" ? payload.kind.trim().toLowerCase() : "";
+  const originalKindValue = typeof payload.kind === "string" ? payload.kind : "";
+  const kindValue = originalKindValue.trim();
+  const raw = kindValue.toLowerCase();
   if (raw === "agentturn") {
-    if (payload.kind !== "agentTurn") {
+    if (originalKindValue !== "agentTurn") {
       payload.kind = "agentTurn";
       return true;
     }
     return false;
   }
   if (raw === "systemevent") {
-    if (payload.kind !== "systemEvent") {
+    if (originalKindValue !== "systemEvent") {
       payload.kind = "systemEvent";
       return true;
     }
@@ -482,6 +484,10 @@ export function normalizeStoredCronJobs(
 
     const sessionTarget =
       typeof raw.sessionTarget === "string" ? raw.sessionTarget.trim().toLowerCase() : "";
+    if (sessionTarget === "main" && "agentId" in raw) {
+      delete raw.agentId;
+      mutated = true;
+    }
     const isIsolatedAgentTurn =
       sessionTarget === "isolated" ||
       sessionTarget === "current" ||

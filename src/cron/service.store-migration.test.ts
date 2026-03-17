@@ -105,6 +105,40 @@ describe("CronService store migrations", () => {
     await stopCronAndCleanup(cron, store);
   });
 
+  it("strips persisted agentId from main-session jobs", async () => {
+    const { store, cron } = await startCronWithStoredJobs([
+      {
+        id: "legacy-main-agent",
+        agentId: "dev",
+        name: "legacy main",
+        enabled: true,
+        createdAtMs: Date.parse("2026-02-01T12:00:00.000Z"),
+        updatedAtMs: Date.parse("2026-02-05T12:00:00.000Z"),
+        schedule: {
+          kind: "every",
+          everyMs: 60_000,
+          anchorMs: Date.parse("2026-02-01T12:00:00.000Z"),
+        },
+        sessionTarget: "main",
+        wakeMode: "next-heartbeat",
+        payload: { kind: "systemEvent", text: "legacy main payload" },
+        state: {},
+      },
+    ]);
+
+    const job = await listJobById(cron, "legacy-main-agent");
+    expect(job).toBeDefined();
+    expect(job?.agentId).toBeUndefined();
+
+    const persisted = JSON.parse(await fs.readFile(store.storePath, "utf-8")) as {
+      jobs: Array<Record<string, unknown>>;
+    };
+    const persistedJob = persisted.jobs.find((entry) => entry.id === "legacy-main-agent");
+    expect("agentId" in (persistedJob ?? {})).toBe(false);
+
+    await stopCronAndCleanup(cron, store);
+  });
+
   it("migrates legacy top-level agentTurn fields and initializes missing state", async () => {
     const { store, cron } = await startCronWithStoredJobs([
       createLegacyIsolatedAgentTurnJob({

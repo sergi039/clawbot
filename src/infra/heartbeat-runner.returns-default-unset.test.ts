@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseTelegramTarget } from "../../extensions/telegram/src/targets.js";
+import { normalizeWhatsAppMessagingTarget } from "../../extensions/whatsapp/src/normalize.js";
 import { whatsappOutbound } from "../../test/channel-outbounds.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
 import * as replyModule from "../auto-reply/reply.js";
@@ -17,6 +18,7 @@ import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/run
 import { buildAgentPeerSessionKey } from "../routing/session-key.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { typedCases } from "../test-utils/typed-cases.js";
+import { isWhatsAppGroupJid } from "../whatsapp/normalize.js";
 import {
   type HeartbeatDeps,
   isHeartbeatEnabledForAgent,
@@ -49,6 +51,26 @@ beforeAll(async () => {
   previousRegistry = getActivePluginRegistry();
 
   const whatsappPlugin = createOutboundTestPlugin({ id: "whatsapp", outbound: whatsappOutbound });
+  whatsappPlugin.messaging = {
+    normalizeTarget: normalizeWhatsAppMessagingTarget,
+    parseExplicitTarget: ({ raw }) => {
+      const to = normalizeWhatsAppMessagingTarget(raw);
+      if (!to) {
+        return null;
+      }
+      return {
+        to,
+        chatType: isWhatsAppGroupJid(to) ? "group" : "direct",
+      };
+    },
+    inferTargetChatType: ({ to }) => {
+      const normalized = normalizeWhatsAppMessagingTarget(to);
+      if (!normalized) {
+        return undefined;
+      }
+      return isWhatsAppGroupJid(normalized) ? "group" : "direct";
+    },
+  };
   whatsappPlugin.config = {
     ...whatsappPlugin.config,
     resolveAllowFrom: ({ cfg }) =>
@@ -496,6 +518,20 @@ describe("runHeartbeatOnce", () => {
     webAuthExists: async () => true,
     hasActiveWebListener: () => true,
   });
+  const createTelegramHeartbeatDeps = (
+    sendTelegram: (
+      to: string,
+      text: string,
+      opts?: unknown,
+    ) => Promise<{ messageId: string; chatId: string }>,
+    nowMs = 0,
+  ): HeartbeatDeps => ({
+    telegram: sendTelegram,
+    getQueueSize: () => 0,
+    nowMs: () => nowMs,
+    webAuthExists: async () => true,
+    hasActiveWebListener: () => true,
+  });
 
   it("skips when agent heartbeat is not enabled", async () => {
     const cfg: OpenClawConfig = {
@@ -591,6 +627,135 @@ describe("runHeartbeatOnce", () => {
         expect.any(Object),
       );
     } finally {
+      replySpy.mockRestore();
+    }
+  });
+
+  it("relays cron reminders through the persisted telegram route without re-reading allowFrom", async () => {
+    const tmpDir = await createCaseDir("hb-telegram-last-route");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const replySpy = vi.spyOn(replyModule, "getReplyFromConfig");
+    const throwingTelegramPlugin = createOutboundTestPlugin({
+      id: "telegram",
+      outbound: {
+        deliveryMode: "direct",
+        sendText: async ({ to, text, deps, accountId }) => {
+          if (!deps?.["telegram"]) {
+            throw new Error("sendTelegram missing");
+          }
+          const res = await (deps["telegram"] as Function)(to, text, {
+            verbose: false,
+            accountId: accountId ?? undefined,
+          });
+          return { channel: "telegram", messageId: res.messageId, chatId: res.chatId };
+        },
+      },
+      messaging: {
+        parseExplicitTarget: ({ raw }) => {
+          const target = parseTelegramTarget(raw);
+          return {
+            to: target.chatId,
+            threadId: target.messageThreadId,
+            chatType: target.chatType === "unknown" ? undefined : target.chatType,
+          };
+        },
+        inferTargetChatType: ({ to }) => {
+          const target = parseTelegramTarget(to);
+          return target.chatType === "unknown" ? undefined : target.chatType;
+        },
+      },
+    });
+    throwingTelegramPlugin.config = {
+      ...throwingTelegramPlugin.config,
+      listAccountIds: () => ["default"],
+      resolveAllowFrom: () => {
+        throw new Error("allowFrom should not be re-read for heartbeat target=last");
+      },
+    };
+
+    try {
+      setActivePluginRegistry(
+        createTestRegistry([
+          { pluginId: "telegram", plugin: throwingTelegramPlugin, source: "test" },
+        ]),
+      );
+
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            workspace: tmpDir,
+            heartbeat: { every: "5m", target: "last" },
+          },
+        },
+        channels: {
+          telegram: {
+            allowFrom: [15589784],
+            botToken: {
+              source: "file",
+              provider: "filemain",
+              id: "/channels/telegram/botToken",
+            },
+          },
+        },
+        session: { store: storePath },
+      };
+      const sessionKey = resolveMainSessionKey(cfg);
+
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          [sessionKey]: {
+            sessionId: "sid",
+            updatedAt: Date.now(),
+            deliveryContext: {
+              channel: "telegram",
+              to: "telegram:15589784",
+              accountId: "default",
+            },
+            lastChannel: "telegram",
+            lastTo: "telegram:15589784",
+            lastAccountId: "default",
+          },
+        }),
+      );
+
+      enqueueSystemEvent("Cron: send the user a status update", {
+        sessionKey,
+        contextKey: "cron:test-relay",
+      });
+
+      replySpy.mockResolvedValue({ text: "Relay this cron update now" });
+      const sendTelegram = vi
+        .fn<
+          (
+            to: string,
+            text: string,
+            opts?: unknown,
+          ) => Promise<{ messageId: string; chatId: string }>
+        >()
+        .mockResolvedValue({ messageId: "m1", chatId: "15589784" });
+
+      const res = await runHeartbeatOnce({
+        cfg,
+        reason: "interval",
+        deps: createTelegramHeartbeatDeps(sendTelegram),
+      });
+
+      expect(res.status).toBe("ran");
+      expect(sendTelegram).toHaveBeenCalledTimes(1);
+      expect(sendTelegram).toHaveBeenCalledWith(
+        "15589784",
+        "Relay this cron update now",
+        expect.objectContaining({ accountId: "default" }),
+      );
+      const calledCtx = replySpy.mock.calls[0]?.[0] as { Provider?: string; Body?: string };
+      expect(calledCtx.Provider).toBe("cron-event");
+      expect(calledCtx.Body).toContain("Please relay this reminder to the user");
+      expect(calledCtx.Body).not.toContain("Handle this reminder internally");
+    } finally {
+      if (testRegistry) {
+        setActivePluginRegistry(testRegistry);
+      }
       replySpy.mockRestore();
     }
   });

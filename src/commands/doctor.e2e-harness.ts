@@ -180,7 +180,7 @@ vi.mock("../agents/skills-status.js", () => ({
 }));
 
 vi.mock("../plugins/loader.js", () => ({
-  loadOpenClawPlugins: () => ({ plugins: [], diagnostics: [] }),
+  loadOpenClawPlugins: () => ({ plugins: [], providers: [], diagnostics: [] }),
 }));
 
 vi.mock("../config/config.js", async (importOriginal) => {

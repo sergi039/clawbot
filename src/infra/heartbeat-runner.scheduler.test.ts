@@ -257,6 +257,34 @@ describe("startHeartbeatRunner", () => {
     runner.stop();
   });
 
+  it("preserves heartbeat overrides on generic wakes without a targeted session", async () => {
+    useFakeHeartbeatTime();
+    const runSpy = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+
+    const runner = startHeartbeatRunner({
+      cfg: heartbeatConfig(),
+      runOnce: runSpy,
+    });
+
+    requestHeartbeatNow({
+      reason: "cron:job-123",
+      heartbeat: { target: "last" },
+      coalesceMs: 0,
+    });
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(runSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        reason: "cron:job-123",
+        heartbeat: expect.objectContaining({ every: "30m", target: "last" }),
+      }),
+    );
+
+    runner.stop();
+  });
+
   it("does not fan out to unrelated agents for session-scoped exec wakes", async () => {
     useFakeHeartbeatTime();
     const runSpy = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });

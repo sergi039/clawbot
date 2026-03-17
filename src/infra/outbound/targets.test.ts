@@ -169,6 +169,7 @@ describe("resolveOutboundTarget defaultTo config fallback", () => {
 });
 
 describe("resolveSessionDeliveryTarget", () => {
+  installResolveOutboundTargetPluginRegistryHooks();
   const expectImplicitRoute = (
     resolved: SessionDeliveryTarget,
     params: {
@@ -644,6 +645,45 @@ describe("resolveSessionDeliveryTarget", () => {
     expect(resolved.channel).toBe("telegram");
     expect(resolved.to).toBe("-10063448508");
     expect(resolved.threadId).toBe(1008013);
+  });
+
+  it("keeps persisted last telegram routes even when config readers require resolved secrets", () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        telegram: {
+          allowFrom: [15589784],
+          botToken: {
+            source: "file",
+            provider: "filemain",
+            id: "/channels/telegram/botToken",
+          },
+        },
+      },
+    };
+
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg,
+      entry: {
+        sessionId: "sess-heartbeat-telegram-prefixed",
+        updatedAt: 1,
+        deliveryContext: {
+          channel: "telegram",
+          to: "telegram:15589784",
+          accountId: "default",
+        },
+      },
+      heartbeat: {
+        target: "last",
+      },
+    });
+
+    expect(resolved).toEqual({
+      channel: "telegram",
+      to: "15589784",
+      accountId: "default",
+      lastChannel: "telegram",
+      lastAccountId: "default",
+    });
   });
 });
 

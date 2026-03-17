@@ -263,6 +263,7 @@ describe("heartbeat-wake", () => {
       reason: "cron:job-1",
       agentId: "ops",
       sessionKey: "agent:ops:discord:channel:alerts",
+      heartbeat: { target: "last" },
       coalesceMs: 0,
     });
 
@@ -272,6 +273,7 @@ describe("heartbeat-wake", () => {
       reason: "cron:job-1",
       agentId: "ops",
       sessionKey: "agent:ops:discord:channel:alerts",
+      heartbeat: { target: "last" },
     });
 
     await vi.advanceTimersByTimeAsync(1000);
@@ -280,6 +282,36 @@ describe("heartbeat-wake", () => {
       reason: "cron:job-1",
       agentId: "ops",
       sessionKey: "agent:ops:discord:channel:alerts",
+      heartbeat: { target: "last" },
+    });
+  });
+
+  it("keeps an existing heartbeat override when a later wake omits it", async () => {
+    vi.useFakeTimers();
+    const handler = vi.fn().mockResolvedValue({ status: "ran", durationMs: 1 });
+    setHeartbeatWakeHandler(handler);
+
+    requestHeartbeatNow({
+      reason: "cron:job-1",
+      agentId: "assistant",
+      sessionKey: "agent:assistant:main",
+      heartbeat: { target: "last" },
+      coalesceMs: 100,
+    });
+    requestHeartbeatNow({
+      reason: "manual",
+      agentId: "assistant",
+      sessionKey: "agent:assistant:main",
+      coalesceMs: 100,
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0]?.[0]).toEqual({
+      reason: "manual",
+      agentId: "assistant",
+      sessionKey: "agent:assistant:main",
+      heartbeat: { target: "last" },
     });
   });
 

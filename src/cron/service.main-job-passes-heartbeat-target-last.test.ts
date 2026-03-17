@@ -88,7 +88,7 @@ describe("cron main job passes heartbeat target=last", () => {
     expect(callArgs?.heartbeat?.target).toBe("last");
   });
 
-  it("should not pass heartbeat target for wakeMode=next-heartbeat main jobs", async () => {
+  it("should queue heartbeat.target=last for wakeMode=next-heartbeat main jobs", async () => {
     const { storePath } = await makeStorePath();
     const now = Date.now();
 
@@ -114,6 +114,12 @@ describe("cron main job passes heartbeat target=last", () => {
 
     // wakeMode=next-heartbeat uses requestHeartbeatNow, not runHeartbeatOnce
     expect(requestHeartbeatNow).toHaveBeenCalled();
+    expect(requestHeartbeatNow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: `cron:${job.id}`,
+        heartbeat: { target: "last" },
+      }),
+    );
     // runHeartbeatOnce should NOT have been called for next-heartbeat mode
     expect(runHeartbeatOnce).not.toHaveBeenCalled();
   });

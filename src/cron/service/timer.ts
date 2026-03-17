@@ -1097,6 +1097,7 @@ export async function executeJobCore(
             reason,
             agentId: job.agentId,
             sessionKey: targetMainSessionKey,
+            heartbeat: { target: "last" },
           });
           return { status: "ok", summary: text };
         }
@@ -1118,6 +1119,7 @@ export async function executeJobCore(
         reason: `cron:${job.id}`,
         agentId: job.agentId,
         sessionKey: targetMainSessionKey,
+        heartbeat: { target: "last" },
       });
       return { status: "ok", summary: text };
     }

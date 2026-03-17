@@ -336,6 +336,7 @@ export function recordScheduleComputeError(params: {
       reason: `cron:${job.id}:auto-disabled`,
       agentId: job.agentId,
       sessionKey: job.sessionKey,
+      heartbeat: job.sessionTarget === "main" ? { target: "last" } : undefined,
     });
   } else {
     state.deps.log.warn(

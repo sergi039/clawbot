@@ -76,18 +76,36 @@ describe("normalizeStoredCronJobs", () => {
     });
   });
 
-  it("does not report legacyPayloadKind for already-normalized payload kinds", () => {
+  it("does not re-flag already normalized payload kinds", () => {
     const jobs = [
       {
-        id: "normalized-agent-turn",
-        name: "normalized",
+        id: "normalized-system-event",
+        schedule: { kind: "every", everyMs: 60_000 },
+        payload: {
+          kind: "systemEvent",
+          text: "ping",
+        },
+        state: {},
+        name: "ping",
         enabled: true,
         wakeMode: "now",
-        schedule: { kind: "every", everyMs: 60_000, anchorMs: 1 },
-        payload: { kind: "agentTurn", message: "ping" },
-        sessionTarget: "isolated",
-        delivery: { mode: "announce" },
+        sessionTarget: "main",
+      },
+      {
+        id: "normalized-agent-turn",
+        schedule: { kind: "every", everyMs: 60_000 },
+        payload: {
+          kind: "agentTurn",
+          message: "pong",
+        },
         state: {},
+        name: "pong",
+        enabled: true,
+        wakeMode: "now",
+        sessionTarget: "isolated",
+        delivery: {
+          mode: "announce",
+        },
       },
     ] as Array<Record<string, unknown>>;
 
@@ -95,6 +113,14 @@ describe("normalizeStoredCronJobs", () => {
 
     expect(result.mutated).toBe(false);
     expect(result.issues.legacyPayloadKind).toBeUndefined();
+    expect(jobs).toMatchObject([
+      {
+        payload: { kind: "systemEvent", text: "ping" },
+      },
+      {
+        payload: { kind: "agentTurn", message: "pong" },
+      },
+    ]);
   });
 
   it("normalizes whitespace-padded and non-canonical payload kinds", () => {

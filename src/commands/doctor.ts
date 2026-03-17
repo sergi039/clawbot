@@ -33,6 +33,7 @@ import { noteChromeMcpBrowserReadiness } from "./doctor-browser.js";
 import { doctorShellCompletion } from "./doctor-completion.js";
 import { loadAndMaybeMigrateDoctorConfig } from "./doctor-config-flow.js";
 import { maybeRepairLegacyCronStore } from "./doctor-cron.js";
+import { resolveGatewayAuthTokenForService } from "./doctor-gateway-auth-token.js";
 import { maybeRepairGatewayDaemon } from "./doctor-gateway-daemon-flow.js";
 import { checkGatewayHealth, probeGatewayMemoryStatus } from "./doctor-gateway-health.js";
 import {
@@ -149,8 +150,14 @@ export async function doctorCommand(
       value: cfg.gateway?.auth?.token,
       defaults: cfg.secrets?.defaults,
     }).ref;
+    const resolvedGatewayToken = await resolveGatewayAuthTokenForService(cfg, process.env);
     const auth = resolveGatewayAuth({
       authConfig: cfg.gateway?.auth,
+      authOverride: resolvedGatewayToken.token
+        ? {
+            token: resolvedGatewayToken.token,
+          }
+        : undefined,
       tailscaleMode: cfg.gateway?.tailscale?.mode ?? "off",
     });
     const needsToken = auth.mode !== "password" && (auth.mode !== "token" || !auth.token);
@@ -158,7 +165,9 @@ export async function doctorCommand(
       if (gatewayTokenRef) {
         note(
           [
-            "Gateway token is managed via SecretRef and is currently unavailable.",
+            resolvedGatewayToken.unavailableReason
+              ? `Gateway token is managed via SecretRef and is currently unavailable.\n${resolvedGatewayToken.unavailableReason}`
+              : "Gateway token is managed via SecretRef and is currently unavailable.",
             "Doctor will not overwrite gateway.auth.token with a plaintext value.",
             "Resolve/rotate the external secret source, then rerun doctor.",
           ].join("\n"),

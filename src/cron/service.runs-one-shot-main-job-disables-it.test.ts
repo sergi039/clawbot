@@ -561,6 +561,7 @@ describe("CronService", () => {
       expect.objectContaining({
         reason: `cron:${job.id}`,
         sessionKey,
+        heartbeat: { target: "last" },
       }),
     );
     expect(job.state.lastStatus).toBe("ok");

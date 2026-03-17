@@ -321,6 +321,43 @@ export function resolveHeartbeatDeliveryTarget(params: {
     });
   }
 
+  // Persisted "last" routes already came from a previously accepted
+  // conversation route. Trust and normalize that route directly instead of
+  // re-reading channel config/auth state, which can fail for read-only
+  // call sites (for example unresolved SecretRefs in source config) and
+  // incorrectly downgrade cron/heartbeat delivery to internal-only mode.
+  if (target === "last" && !heartbeat?.to) {
+    const persistedRoute = normalizeHeartbeatLastRouteTarget({
+      channel: resolvedTarget.channel,
+      to: resolvedTarget.to,
+      threadId: resolvedTarget.threadId,
+    });
+    if (persistedRoute) {
+      const sessionChatTypeHint = normalizeChatType(entry?.chatType);
+      const deliveryChatType = resolveHeartbeatDeliveryChatType({
+        channel: resolvedTarget.channel,
+        to: persistedRoute.to,
+        sessionChatType: sessionChatTypeHint,
+      });
+      if (deliveryChatType === "direct" && heartbeat?.directPolicy === "block") {
+        return buildNoHeartbeatDeliveryTarget({
+          reason: "dm-blocked",
+          accountId: effectiveAccountId,
+          lastChannel: resolvedTarget.lastChannel,
+          lastAccountId: resolvedTarget.lastAccountId,
+        });
+      }
+      return {
+        channel: resolvedTarget.channel,
+        to: persistedRoute.to,
+        accountId: effectiveAccountId,
+        threadId: persistedRoute.threadId,
+        lastChannel: resolvedTarget.lastChannel,
+        lastAccountId: resolvedTarget.lastAccountId,
+      };
+    }
+  }
+
   const resolved = resolveOutboundTarget({
     channel: resolvedTarget.channel,
     to: resolvedTarget.to,
@@ -395,6 +432,34 @@ function buildNoHeartbeatDeliveryTarget(params: {
     lastChannel: params.lastChannel,
     lastAccountId: params.lastAccountId,
   };
+}
+
+function normalizeHeartbeatLastRouteTarget(params: {
+  channel: DeliverableMessageChannel;
+  to: string;
+  threadId?: string | number;
+}): { to: string; threadId?: string | number } | null {
+  const to = params.to.trim();
+  if (!to) {
+    return null;
+  }
+
+  const plugin = resolveOutboundChannelPlugin({
+    channel: params.channel,
+  });
+  const normalized = plugin?.messaging?.normalizeTarget?.(to) ?? to;
+  if (!normalized) {
+    return null;
+  }
+  try {
+    const parsed = plugin?.messaging?.parseExplicitTarget?.({ raw: normalized });
+    return {
+      to: parsed?.to ?? normalized,
+      threadId: params.threadId ?? parsed?.threadId,
+    };
+  } catch {
+    return { to: normalized, threadId: params.threadId };
+  }
 }
 
 function inferChatTypeFromTarget(params: {
@@ -479,15 +544,24 @@ export function resolveHeartbeatSenderContext(params: {
   const accountId =
     params.delivery.accountId ??
     (provider === params.delivery.lastChannel ? params.delivery.lastAccountId : undefined);
-  const allowFromRaw = provider
-    ? (resolveOutboundChannelPlugin({
-        channel: provider,
-        cfg: params.cfg,
-      })?.config.resolveAllowFrom?.({
-        cfg: params.cfg,
-        accountId,
-      }) ?? [])
-    : [];
+  let allowFromRaw: Array<string | number> = [];
+  if (provider) {
+    try {
+      allowFromRaw =
+        resolveOutboundChannelPlugin({
+          channel: provider,
+          cfg: params.cfg,
+        })?.config.resolveAllowFrom?.({
+          cfg: params.cfg,
+          accountId,
+        }) ?? [];
+    } catch {
+      // Heartbeat sender fallback must stay read-only. If config-backed
+      // allowFrom resolution needs secrets/runtime state, keep routing via the
+      // persisted delivery target instead of crashing or downgrading delivery.
+      allowFromRaw = [];
+    }
+  }
   const allowFrom = mapAllowFromEntries(allowFromRaw);
 
   const sender = resolveHeartbeatSenderId({

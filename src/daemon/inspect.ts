@@ -78,6 +78,22 @@ function hasGatewayServiceMarker(content: string): boolean {
   );
 }
 
+function hasGatewayKeyword(label: string, contents: string): boolean {
+  const lowerLabel = label.toLowerCase();
+  const lowerContents = contents.toLowerCase();
+  return lowerLabel.includes("gateway") || lowerContents.includes("gateway");
+}
+
+function isGatewayLikeLegacyService(label: string, contents: string): boolean {
+  if (hasGatewayServiceMarker(contents)) {
+    return true;
+  }
+  if (!hasGatewayKeyword(label, contents)) {
+    return false;
+  }
+  return isLegacyLabel(label) || detectMarker(contents) !== null;
+}
+
 function isOpenClawGatewayLaunchdService(label: string, contents: string): boolean {
   if (hasGatewayServiceMarker(contents)) {
     return true;
@@ -191,6 +207,9 @@ async function scanLaunchdDir(params: {
   for (const { name: labelFromName, fullPath, contents } of candidates) {
     const marker = detectMarker(contents);
     const label = tryExtractPlistLabel(contents) ?? labelFromName;
+    if (!isGatewayLikeLegacyService(label, contents)) {
+      continue;
+    }
     if (!marker) {
       const legacyLabel = isLegacyLabel(labelFromName) || isLegacyLabel(label);
       if (!legacyLabel) {
@@ -239,6 +258,9 @@ async function scanSystemdDir(params: {
   for (const { entry, name, fullPath, contents } of candidates) {
     const marker = detectMarker(contents);
     if (!marker) {
+      continue;
+    }
+    if (!isGatewayLikeLegacyService(name, contents)) {
       continue;
     }
     if (marker === "openclaw" && isOpenClawGatewaySystemdService(name, contents)) {

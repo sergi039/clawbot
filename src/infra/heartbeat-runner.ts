@@ -65,6 +65,7 @@ import {
   areHeartbeatsEnabled,
   type HeartbeatRunResult,
   type HeartbeatWakeHandler,
+  type HeartbeatWakeOverride,
   requestHeartbeatNow,
   setHeartbeatsEnabled,
   setHeartbeatWakeHandler,
@@ -96,6 +97,16 @@ export {
 } from "./heartbeat-summary.js";
 
 type HeartbeatConfig = AgentDefaultsConfig["heartbeat"];
+
+function mergeHeartbeatOverride(
+  base: HeartbeatConfig | undefined,
+  override: HeartbeatWakeOverride | undefined,
+): HeartbeatConfig | undefined {
+  if (!override) {
+    return base;
+  }
+  return { ...base, ...override };
+}
 type HeartbeatAgent = {
   agentId: string;
   heartbeat?: HeartbeatConfig;
@@ -633,6 +644,24 @@ export async function runHeartbeatOnce(opts: {
     canRelayToUser,
     workspaceDir,
   });
+  if (hasCronEvents && !canRelayToUser) {
+    log.warn("heartbeat: cron delivery downgraded to internal-only mode", {
+      reason: opts.reason ?? null,
+      sessionKey,
+      deliveryChannel: delivery.channel,
+      deliveryTo: delivery.to ?? null,
+      deliveryReason: delivery.reason ?? null,
+      deliveryAccountId: delivery.accountId ?? null,
+      lastChannel: delivery.lastChannel ?? null,
+      lastAccountId: delivery.lastAccountId ?? null,
+      visibilityShowAlerts: visibility.showAlerts,
+      entryDeliveryChannel: entry?.deliveryContext?.channel ?? entry?.lastChannel ?? null,
+      entryDeliveryTo: entry?.deliveryContext?.to ?? entry?.lastTo ?? null,
+      entryDeliveryAccountId: entry?.deliveryContext?.accountId ?? entry?.lastAccountId ?? null,
+      heartbeatTarget: heartbeat?.target ?? null,
+      heartbeatDirectPolicy: heartbeat?.directPolicy ?? null,
+    });
+  }
   const ctx = {
     Body: appendCronStyleCurrentTimeLine(prompt, cfg, startedAt),
     From: sender,
@@ -1090,7 +1119,7 @@ export function startHeartbeatRunner(opts: {
         const res = await runOnce({
           cfg: state.cfg,
           agentId: targetAgent.agentId,
-          heartbeat: targetAgent.heartbeat,
+          heartbeat: mergeHeartbeatOverride(targetAgent.heartbeat, params?.heartbeat),
           reason,
           sessionKey: requestedSessionKey,
           deps: { runtime: state.runtime },
@@ -1121,7 +1150,7 @@ export function startHeartbeatRunner(opts: {
         res = await runOnce({
           cfg: state.cfg,
           agentId: agent.agentId,
-          heartbeat: agent.heartbeat,
+          heartbeat: mergeHeartbeatOverride(agent.heartbeat, params?.heartbeat),
           reason,
           deps: { runtime: state.runtime },
         });
@@ -1160,6 +1189,7 @@ export function startHeartbeatRunner(opts: {
       reason: params.reason,
       agentId: params.agentId,
       sessionKey: params.sessionKey,
+      heartbeat: params.heartbeat,
     });
   const disposeWakeHandler = setHeartbeatWakeHandler(wakeHandler);
   updateConfig(state.cfg);

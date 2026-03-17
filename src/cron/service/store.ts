@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import { normalizeStoredCronJobs } from "../store-migration.js";
 import { loadCronStore, saveCronStore } from "../store.js";
-import type { CronJob } from "../types.js";
 import { recomputeNextRuns } from "./jobs.js";
 import type { CronServiceState } from "./state.js";
 
@@ -35,7 +34,7 @@ export async function ensureLoaded(
   const loaded = await loadCronStore(state.deps.storePath);
   const jobs = (loaded.jobs ?? []) as unknown as Array<Record<string, unknown>>;
   const { mutated } = normalizeStoredCronJobs(jobs);
-  state.store = { version: 1, jobs: jobs as unknown as CronJob[] };
+  state.store = { version: 1, jobs: jobs as never };
   state.storeLoadedAtMs = state.deps.nowMs();
   state.storeFileMtimeMs = fileMtimeMs;
 
