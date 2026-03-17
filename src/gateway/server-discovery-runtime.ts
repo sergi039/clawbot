@@ -1,6 +1,7 @@
 import { startGatewayBonjourAdvertiser } from "../infra/bonjour.js";
 import { pickPrimaryTailnetIPv4, pickPrimaryTailnetIPv6 } from "../infra/tailnet.js";
 import { resolveWideAreaDiscoveryDomain, writeWideAreaGatewayZone } from "../infra/widearea-dns.js";
+import { isLoopbackHost } from "./net.js";
 import {
   formatBonjourInstanceName,
   resolveBonjourCliPath,
@@ -10,6 +11,7 @@ import {
 export async function startGatewayDiscovery(params: {
   machineDisplayName: string;
   port: number;
+  bindHost?: string;
   gatewayTls?: { enabled: boolean; fingerprintSha256?: string };
   canvasPort?: number;
   wideAreaDiscoveryEnabled: boolean;
@@ -21,9 +23,14 @@ export async function startGatewayDiscovery(params: {
 }) {
   let bonjourStop: (() => Promise<void>) | null = null;
   const mdnsMode = params.mdnsMode ?? "minimal";
+  const loopbackOnly =
+    typeof params.bindHost === "string" && params.bindHost.trim()
+      ? isLoopbackHost(params.bindHost)
+      : false;
   // mDNS can be disabled via config (mdnsMode: off) or env var.
   const bonjourEnabled =
     mdnsMode !== "off" &&
+    !loopbackOnly &&
     process.env.OPENCLAW_DISABLE_BONJOUR !== "1" &&
     process.env.NODE_ENV !== "test" &&
     !process.env.VITEST;

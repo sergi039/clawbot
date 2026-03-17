@@ -717,6 +717,7 @@ export async function startGatewayServer(
     const discovery = await startGatewayDiscovery({
       machineDisplayName,
       port,
+      bindHost,
       gatewayTls: gatewayTls.enabled
         ? { enabled: true, fingerprintSha256: gatewayTls.fingerprintSha256 }
         : undefined,
