@@ -156,6 +156,15 @@ export async function runGatewayLoop(params: {
               abortEmbeddedPiRun(undefined, { mode: "all" });
             }
           }
+        } else {
+          // On stop (SIGTERM/SIGINT), abort active runs immediately so they
+          // release session busy state.  Unlike restart we do not drain —
+          // the process is exiting and the runs cannot be preserved.
+          const activeRuns = getActiveEmbeddedRunCount();
+          if (activeRuns > 0) {
+            gatewayLog.info(`aborting ${activeRuns} active embedded run(s) for shutdown`);
+            abortEmbeddedPiRun(undefined, { mode: "all" });
+          }
         }
 
         await server?.close({

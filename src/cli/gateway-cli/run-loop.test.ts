@@ -421,6 +421,43 @@ describe("runGatewayLoop", () => {
       );
     });
   });
+
+  it("aborts active embedded runs on SIGTERM so sessions release busy state", async () => {
+    vi.clearAllMocks();
+    // Simulate 1 active embedded run at the time of SIGTERM.
+    getActiveEmbeddedRunCount.mockReturnValue(1);
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { close, exited } = await createSignaledLoopHarness();
+      const sigterm = captureSignal("SIGTERM");
+
+      sigterm();
+
+      await expect(exited).resolves.toBe(0);
+      // The stop path must abort all active runs before server.close().
+      expect(abortEmbeddedPiRun).toHaveBeenCalledWith(undefined, { mode: "all" });
+      expect(gatewayLog.info).toHaveBeenCalledWith(
+        expect.stringContaining("aborting 1 active embedded run(s) for shutdown"),
+      );
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("skips abort on SIGTERM when no active embedded runs", async () => {
+    vi.clearAllMocks();
+    getActiveEmbeddedRunCount.mockReturnValue(0);
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { exited } = await createSignaledLoopHarness();
+      const sigterm = captureSignal("SIGTERM");
+
+      sigterm();
+
+      await expect(exited).resolves.toBe(0);
+      // No abort call when there are no active runs.
+      expect(abortEmbeddedPiRun).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("gateway discover routing helpers", () => {
