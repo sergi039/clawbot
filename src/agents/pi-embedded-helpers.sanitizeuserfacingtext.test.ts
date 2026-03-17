@@ -78,7 +78,15 @@ describe("sanitizeUserFacingText", () => {
   it("sanitizes raw API error payloads", () => {
     const raw = '{"type":"error","error":{"message":"Something exploded","type":"server_error"}}';
     expect(sanitizeUserFacingText(raw, { errorContext: true })).toBe(
-      "LLM error server_error: Something exploded",
+      "The AI service is temporarily unavailable. Please try again in a moment.",
+    );
+  });
+
+  it("sanitizes Codex-prefixed raw API error payloads", () => {
+    const raw =
+      'Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request. Please include the request ID req_123 in your message.","param":null},"sequence_number":2}';
+    expect(sanitizeUserFacingText(raw, { errorContext: true })).toBe(
+      "The AI service is temporarily unavailable. Please try again in a moment.",
     );
   });
 

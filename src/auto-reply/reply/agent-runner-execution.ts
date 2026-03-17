@@ -11,7 +11,7 @@ import {
   isContextOverflowError,
   isBillingErrorMessage,
   isLikelyContextOverflowError,
-  isTransientHttpError,
+  isTransientProviderError,
   sanitizeUserFacingText,
 } from "../../agents/pi-embedded-helpers.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
@@ -533,7 +533,7 @@ export async function runAgentTurnWithFallback(params: {
       const isCompactionFailure = !isBilling && isCompactionFailureError(message);
       const isSessionCorruption = /function call turn comes immediately after/i.test(message);
       const isRoleOrderingError = /incorrect role information|roles must alternate/i.test(message);
-      const isTransientHttp = isTransientHttpError(message);
+      const isTransientProvider = isTransientProviderError(message);
 
       if (
         isCompactionFailure &&
@@ -605,14 +605,14 @@ export async function runAgentTurnWithFallback(params: {
         };
       }
 
-      if (isTransientHttp && !didRetryTransientHttpError) {
+      if (isTransientProvider && !didRetryTransientHttpError) {
         didRetryTransientHttpError = true;
         // Retry the full runWithModelFallback() cycle — transient errors
         // (502/521/etc.) typically affect the whole provider, so falling
         // back to an alternate model first would not help. Instead we wait
         // and retry the complete primary→fallback chain.
         defaultRuntime.error(
-          `Transient HTTP provider error before reply (${message}). Retrying once in ${TRANSIENT_HTTP_RETRY_DELAY_MS}ms.`,
+          `Transient provider error before reply (${message}). Retrying once in ${TRANSIENT_HTTP_RETRY_DELAY_MS}ms.`,
         );
         await new Promise<void>((resolve) => {
           setTimeout(resolve, TRANSIENT_HTTP_RETRY_DELAY_MS);
@@ -621,7 +621,7 @@ export async function runAgentTurnWithFallback(params: {
       }
 
       defaultRuntime.error(`Embedded agent failed before reply: ${message}`);
-      const safeMessage = isTransientHttp
+      const safeMessage = isTransientProvider
         ? sanitizeUserFacingText(message, { errorContext: true })
         : message;
       const trimmedMessage = safeMessage.replace(/\.\s*$/, "");

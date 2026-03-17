@@ -2,7 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import type { OAuthCredentials } from "@mariozechner/pi-ai";
 import { resolveOpenClawAgentDir } from "../agents/agent-paths.js";
-import { upsertAuthProfile } from "../agents/auth-profiles.js";
+import {
+  ensureAuthProfileStore,
+  markAuthProfileGood,
+  upsertAuthProfile,
+} from "../agents/auth-profiles.js";
 import { normalizeProviderIdForAuth } from "../agents/provider-id.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
@@ -234,11 +238,21 @@ export async function writeOAuthCredentials(
     ...creds,
   };
 
-  upsertAuthProfile({
-    profileId,
-    credential,
-    agentDir: resolvedAgentDir,
-  });
+  const persistOAuthProfile = async (targetAgentDir: string) => {
+    upsertAuthProfile({
+      profileId,
+      credential,
+      agentDir: targetAgentDir,
+    });
+    await markAuthProfileGood({
+      store: ensureAuthProfileStore(targetAgentDir),
+      provider,
+      profileId,
+      agentDir: targetAgentDir,
+    });
+  };
+
+  await persistOAuthProfile(resolvedAgentDir);
 
   if (options?.syncSiblingAgents) {
     const primaryReal = safeRealpathSync(resolvedAgentDir);
@@ -248,11 +262,7 @@ export async function writeOAuthCredentials(
         continue;
       }
       try {
-        upsertAuthProfile({
-          profileId,
-          credential,
-          agentDir: targetAgentDir,
-        });
+        await persistOAuthProfile(targetAgentDir);
       } catch {
         // Best-effort: sibling sync failure must not block primary setup.
       }

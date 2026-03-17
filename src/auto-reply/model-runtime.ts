@@ -70,19 +70,31 @@ function normalizeModelRef(
 export function resolveSelectedAndActiveModel(params: {
   selectedProvider: string;
   selectedModel: string;
-  sessionEntry?: Pick<SessionEntry, "modelProvider" | "model">;
+  sessionEntry?: Pick<
+    SessionEntry,
+    | "modelProvider"
+    | "model"
+    | "fallbackNoticeSelectedModel"
+    | "fallbackNoticeActiveModel"
+    | "fallbackNoticeReason"
+  >;
 }): {
   selected: ModelRef;
   active: ModelRef;
   activeDiffers: boolean;
 } {
   const selected = normalizeModelRef(params.selectedModel, params.selectedProvider);
+  const fallbackSelected = String(params.sessionEntry?.fallbackNoticeSelectedModel ?? "").trim();
+  const fallbackActive = String(params.sessionEntry?.fallbackNoticeActiveModel ?? "").trim();
   const runtimeModel = params.sessionEntry?.model?.trim();
   const runtimeProvider = params.sessionEntry?.modelProvider?.trim();
 
-  const active = runtimeModel
-    ? normalizeModelRef(runtimeModel, runtimeProvider || selected.provider, !runtimeProvider)
-    : selected;
+  const active =
+    fallbackSelected === selected.label && fallbackActive
+      ? normalizeModelRef(fallbackActive, selected.provider, true)
+      : runtimeModel
+        ? normalizeModelRef(runtimeModel, runtimeProvider || selected.provider, !runtimeProvider)
+        : selected;
   const activeDiffers = active.provider !== selected.provider || active.model !== selected.model;
 
   return {

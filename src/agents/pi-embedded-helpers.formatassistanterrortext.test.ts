@@ -78,7 +78,17 @@ describe("formatAssistantErrorText", () => {
     const msg = makeAssistantError(
       '{"type":"error","error":{"message":"Something exploded","type":"server_error"}}',
     );
-    expect(formatAssistantErrorText(msg)).toBe("LLM error server_error: Something exploded");
+    expect(formatAssistantErrorText(msg)).toBe(
+      "The AI service is temporarily unavailable. Please try again in a moment.",
+    );
+  });
+  it("suppresses Codex-prefixed internal server payloads", () => {
+    const msg = makeAssistantError(
+      'Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request. Please include the request ID req_123 in your message.","param":null},"sequence_number":2}',
+    );
+    expect(formatAssistantErrorText(msg)).toBe(
+      "The AI service is temporarily unavailable. Please try again in a moment.",
+    );
   });
   it("returns a friendly billing message for credit balance errors", () => {
     const msg = makeAssistantError("Your credit balance is too low to access the Anthropic API.");
@@ -157,5 +167,13 @@ describe("formatRawAssistantErrorForUi", () => {
     expect(formatRawAssistantErrorForUi(htmlError)).toBe(
       "The AI service is temporarily unavailable (HTTP 521). Please try again in a moment.",
     );
+  });
+
+  it("sanitizes Codex server_error payloads into a short unavailable message", () => {
+    expect(
+      formatRawAssistantErrorForUi(
+        'Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request. Please include the request ID req_123 in your message.","param":null},"sequence_number":2}',
+      ),
+    ).toBe("The AI service is temporarily unavailable. Please try again in a moment.");
   });
 });

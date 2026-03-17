@@ -15,6 +15,7 @@ import {
   isLikelyContextOverflowError,
   isTimeoutErrorMessage,
   isTransientHttpError,
+  isTransientProviderError,
   parseImageDimensionError,
   parseImageSizeError,
 } from "./pi-embedded-helpers.js";
@@ -523,6 +524,15 @@ describe("isTransientHttpError", () => {
   it("returns false for non-retryable or non-http text", () => {
     expect(isTransientHttpError("429 Too Many Requests")).toBe(false);
     expect(isTransientHttpError("network timeout")).toBe(false);
+  });
+});
+
+describe("isTransientProviderError", () => {
+  it("returns true for Codex JSON server errors", () => {
+    const raw =
+      'Codex error: {"type":"error","error":{"type":"server_error","code":"server_error","message":"An error occurred while processing your request. Please include the request ID req_123 in your message.","param":null},"sequence_number":2}';
+    expect(isTransientProviderError(raw)).toBe(true);
+    expect(classifyFailoverReason(raw)).toBe("timeout");
   });
 });
 

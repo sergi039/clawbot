@@ -42,6 +42,8 @@ export const BILLING_ERROR_USER_MESSAGE = formatBillingErrorMessage();
 const RATE_LIMIT_ERROR_USER_MESSAGE = "⚠️ API rate limit reached. Please try again later.";
 const OVERLOADED_ERROR_USER_MESSAGE =
   "The AI service is temporarily overloaded. Please try again in a moment.";
+const INTERNAL_SERVER_ERROR_USER_MESSAGE =
+  "The AI service is temporarily unavailable. Please try again in a moment.";
 
 function formatRateLimitOrOverloadedErrorCopy(raw: string): string | undefined {
   if (isRateLimitErrorMessage(raw)) {
@@ -214,10 +216,10 @@ export function extractObservedOverflowTokenCount(errorMessage?: string): number
 
 // Allow provider-wrapped API payloads such as "Ollama API error 400: {...}".
 const ERROR_PAYLOAD_PREFIX_RE =
-  /^(?:error|(?:[a-z][\w-]*\s+)?api\s*error|apierror|openai\s*error|anthropic\s*error|gateway\s*error)(?:\s+\d{3})?[:\s-]+/i;
+  /^(?:error|(?:[a-z][\w-]*\s+)?api\s*error|apierror|openai\s*error|anthropic\s*error|gateway\s*error|codex\s*error)(?:\s+\d{3})?[:\s-]+/i;
 const FINAL_TAG_RE = /<\s*\/?\s*final\s*>/gi;
 const ERROR_PREFIX_RE =
-  /^(?:error|(?:[a-z][\w-]*\s+)?api\s*error|openai\s*error|anthropic\s*error|gateway\s*error|request failed|failed|exception)(?:\s+\d{3})?[:\s-]+/i;
+  /^(?:error|(?:[a-z][\w-]*\s+)?api\s*error|openai\s*error|anthropic\s*error|gateway\s*error|codex\s*error|request failed|failed|exception)(?:\s+\d{3})?[:\s-]+/i;
 const CONTEXT_OVERFLOW_ERROR_HEAD_RE =
   /^(?:context overflow:|request_too_large\b|request size exceeds\b|request exceeds the maximum size\b|context length exceeded\b|maximum context length\b|prompt is too long\b|exceeds model context window\b)/i;
 const HTTP_STATUS_PREFIX_RE = /^(?:http\s*)?(\d{3})\s+(.+)$/i;
@@ -587,6 +589,20 @@ export type ApiErrorInfo = {
   requestId?: string;
 };
 
+function isApiInternalServerErrorInfo(info: ApiErrorInfo | null): boolean {
+  const type = info?.type?.trim().toLowerCase();
+  const message = info?.message?.trim().toLowerCase();
+  if (!message) {
+    return false;
+  }
+  return (
+    type === "server_error" ||
+    (type === "api_error" && message.includes("internal server error")) ||
+    message.includes("internal server error") ||
+    message.includes("occurred while processing your request")
+  );
+}
+
 export function parseApiErrorInfo(raw?: string): ApiErrorInfo | null {
   if (!raw) {
     return null;
@@ -663,6 +679,9 @@ export function formatRawAssistantErrorForUi(raw?: string): string {
   }
 
   const info = parseApiErrorInfo(trimmed);
+  if (isApiInternalServerErrorInfo(info)) {
+    return INTERNAL_SERVER_ERROR_USER_MESSAGE;
+  }
   if (info?.message) {
     const prefix = info.httpCode ? `HTTP ${info.httpCode}` : "LLM error";
     const type = info.type ? ` ${info.type}` : "";
@@ -742,6 +761,10 @@ export function formatAssistantErrorText(
   const transientCopy = formatRateLimitOrOverloadedErrorCopy(raw);
   if (transientCopy) {
     return transientCopy;
+  }
+
+  if (isJsonApiInternalServerError(raw)) {
+    return INTERNAL_SERVER_ERROR_USER_MESSAGE;
   }
 
   if (isTimeoutErrorMessage(raw)) {
@@ -849,13 +872,14 @@ export function isBillingAssistantError(msg: AssistantMessage | undefined): bool
 }
 
 function isJsonApiInternalServerError(raw: string): boolean {
+  return isApiInternalServerErrorInfo(parseApiErrorInfo(raw));
+}
+
+export function isTransientProviderError(raw: string): boolean {
   if (!raw) {
     return false;
   }
-  const value = raw.toLowerCase();
-  // Anthropic often wraps transient 500s in JSON payloads like:
-  // {"type":"error","error":{"type":"api_error","message":"Internal server error"}}
-  return value.includes('"type":"api_error"') && value.includes("internal server error");
+  return isTransientHttpError(raw) || isJsonApiInternalServerError(raw);
 }
 
 export function parseImageDimensionError(raw: string): {

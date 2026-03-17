@@ -40,6 +40,7 @@ export {
   isRateLimitAssistantError,
   isRateLimitErrorMessage,
   isTransientHttpError,
+  isTransientProviderError,
   isTimeoutErrorMessage,
   parseImageDimensionError,
   parseImageSizeError,

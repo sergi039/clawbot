@@ -101,6 +101,35 @@ describe("/model chat UX", () => {
     expect(reply?.text).toContain("Active: deepinfra/moonshotai/Kimi-K2.5 (runtime)");
   });
 
+  it("prefers persisted fallback runtime over session model override fields", async () => {
+    const directives = parseInlineDirectives("/model");
+    const cfg = { commands: { text: true } } as unknown as OpenClawConfig;
+
+    const reply = await maybeHandleModelDirectiveInfo({
+      directives,
+      cfg,
+      agentDir: "/tmp/agent",
+      activeAgentId: "main",
+      provider: "openai-codex",
+      model: "gpt-5.4",
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-5.4",
+      aliasIndex: baseAliasIndex(),
+      allowedModelCatalog: [],
+      resetModelOverride: false,
+      sessionEntry: {
+        modelProvider: "openai-codex",
+        model: "gpt-5.4",
+        fallbackNoticeSelectedModel: "openai-codex/gpt-5.4",
+        fallbackNoticeActiveModel: "anthropic/claude-sonnet-4-6",
+        fallbackNoticeReason: "auth",
+      },
+    });
+
+    expect(reply?.text).toContain("Current: openai-codex/gpt-5.4 (selected)");
+    expect(reply?.text).toContain("Active: anthropic/claude-sonnet-4-6 (runtime)");
+  });
+
   it("auto-applies closest match for typos", () => {
     const directives = parseInlineDirectives("/model anthropic/claud-opus-4-5");
     const cfg = { commands: { text: true } } as unknown as OpenClawConfig;

@@ -201,13 +201,71 @@ describe("writeOAuthCredentials", () => {
       const raw = await fs.readFile(authProfilePathFor(dir), "utf8");
       const parsed = JSON.parse(raw) as {
         profiles?: Record<string, OAuthCredentials & { type?: string }>;
+        lastGood?: Record<string, string>;
       };
       expect(parsed.profiles?.["openai-codex:default"]).toMatchObject({
         refresh: "refresh-sync",
         access: "access-sync",
         type: "oauth",
       });
+      expect(parsed.lastGood?.["openai-codex"]).toBe("openai-codex:default");
     }
+  });
+
+  it("replaces stale lastGood when syncing OAuth credentials", async () => {
+    tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-oauth-lastgood-"));
+    process.env.OPENCLAW_STATE_DIR = tempStateDir;
+
+    const mainAgentDir = path.join(tempStateDir, "agents", "main", "agent");
+    const assistantAgentDir = path.join(tempStateDir, "agents", "assistant", "agent");
+    await fs.mkdir(mainAgentDir, { recursive: true });
+    await fs.mkdir(assistantAgentDir, { recursive: true });
+
+    process.env.OPENCLAW_AGENT_DIR = mainAgentDir;
+    process.env.PI_CODING_AGENT_DIR = mainAgentDir;
+
+    await fs.writeFile(
+      authProfilePathFor(assistantAgentDir),
+      JSON.stringify(
+        {
+          version: 1,
+          profiles: {
+            "anthropic:manual": {
+              type: "api_key",
+              provider: "anthropic",
+              key: "sk-test",
+            },
+          },
+          lastGood: {
+            "openai-codex": "openai-codex:manual",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const creds = {
+      refresh: "refresh-fresh",
+      access: "access-fresh",
+      expires: Date.now() + 60_000,
+    } satisfies OAuthCredentials;
+
+    await writeOAuthCredentials("openai-codex", creds, mainAgentDir, {
+      syncSiblingAgents: true,
+    });
+
+    const assistantRaw = await fs.readFile(authProfilePathFor(assistantAgentDir), "utf8");
+    const assistantParsed = JSON.parse(assistantRaw) as {
+      lastGood?: Record<string, string>;
+      profiles?: Record<string, OAuthCredentials & { type?: string }>;
+    };
+    expect(assistantParsed.profiles?.["openai-codex:default"]).toMatchObject({
+      access: "access-fresh",
+      type: "oauth",
+    });
+    expect(assistantParsed.lastGood?.["openai-codex"]).toBe("openai-codex:default");
   });
 
   it("writes OAuth credentials only to target dir by default", async () => {

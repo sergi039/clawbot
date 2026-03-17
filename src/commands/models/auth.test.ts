@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { ProviderPlugin } from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
+import { OPENAI_CODEX_DEFAULT_MODEL } from "../openai-codex-model-default.js";
 
 const mocks = vi.hoisted(() => ({
   clackCancel: vi.fn(),
@@ -214,7 +215,7 @@ describe("modelsAuthLoginCommand", () => {
       "Auth profile: openai-codex:user@example.com (openai-codex/oauth)",
     );
     expect(runtime.log).toHaveBeenCalledWith(
-      "Default model available: openai-codex/gpt-5.4 (use --set-default to apply)",
+      `Default model available: ${OPENAI_CODEX_DEFAULT_MODEL} (use --set-default to apply)`,
     );
   });
 
@@ -224,9 +225,9 @@ describe("modelsAuthLoginCommand", () => {
     await modelsAuthLoginCommand({ provider: "openai-codex", setDefault: true }, runtime);
 
     expect(lastUpdatedConfig?.agents?.defaults?.model).toEqual({
-      primary: "openai-codex/gpt-5.4",
+      primary: OPENAI_CODEX_DEFAULT_MODEL,
     });
-    expect(runtime.log).toHaveBeenCalledWith("Default model set to openai-codex/gpt-5.4");
+    expect(runtime.log).toHaveBeenCalledWith(`Default model set to ${OPENAI_CODEX_DEFAULT_MODEL}`);
   });
 
   it("clears stale auth lockouts before attempting openai-codex login", async () => {
@@ -256,7 +257,6 @@ describe("modelsAuthLoginCommand", () => {
       profileId: "openai-codex:user@example.com",
       agentDir: "/tmp/openclaw/agents/main",
     });
-    // Verify clearing happens before login attempt
     const clearOrder = mocks.clearAuthProfileCooldown.mock.invocationCallOrder[0];
     const loginOrder = runProviderAuth.mock.invocationCallOrder[0];
     expect(clearOrder).toBeLessThan(loginOrder);
