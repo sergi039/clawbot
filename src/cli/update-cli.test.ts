@@ -777,6 +777,23 @@ describe("update-cli", () => {
     expect(runDaemonRestart).not.toHaveBeenCalled();
   });
 
+  it("updateCommand skips post-update side effects during staging runs", async () => {
+    vi.mocked(runGatewayUpdate).mockResolvedValue(makeOkUpdateResult());
+    serviceLoaded.mockResolvedValue(true);
+
+    await withEnvAsync({ OPENCLAW_UPDATE_STAGING: "1" }, async () => {
+      await updateCommand({});
+    });
+
+    expect(serviceLoaded).not.toHaveBeenCalled();
+    expect(syncPluginsForUpdateChannel).not.toHaveBeenCalled();
+    expect(updateNpmInstalledPlugins).not.toHaveBeenCalled();
+    expect(runDaemonInstall).not.toHaveBeenCalled();
+    expect(runRestartScript).not.toHaveBeenCalled();
+    expect(runDaemonRestart).not.toHaveBeenCalled();
+    expect(doctorCommand).not.toHaveBeenCalled();
+  });
+
   it("updateCommand continues after doctor sub-step and clears update flag", async () => {
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
     try {

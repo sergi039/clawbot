@@ -7,6 +7,7 @@ import {
   resolveControlUiDistIndexPathForRoot,
 } from "./control-ui-assets.js";
 import { detectPackageManager as detectPackageManagerImpl } from "./detect-package-manager.js";
+import { isTruthyEnvValue } from "./env.js";
 import { readPackageName, readPackageVersion } from "./package-json.js";
 import { normalizePackageTagInput } from "./package-tag.js";
 import { trimLogTail } from "./restart-sentinel.js";
@@ -89,6 +90,15 @@ const PREFLIGHT_MAX_COMMITS = 10;
 const START_DIRS = ["cwd", "argv1", "process"];
 const DEFAULT_PACKAGE_NAME = "openclaw";
 const CORE_PACKAGE_NAMES = new Set([DEFAULT_PACKAGE_NAME]);
+const OBSOLETE_LOCAL_COMMIT_SUBJECTS = new Set([
+  "fix(pi-ai): adapt oauth imports and payload hooks",
+  "fix(update): sync workspace lockfile",
+]);
+
+type AheadCommit = {
+  sha: string;
+  subject: string;
+};
 
 function normalizeDir(value?: string | null) {
   if (!value) {
@@ -310,7 +320,7 @@ function managerScriptArgs(manager: "pnpm" | "bun" | "npm", script: string, args
 
 function managerInstallArgs(manager: "pnpm" | "bun" | "npm") {
   if (manager === "pnpm") {
-    return ["pnpm", "install"];
+    return ["pnpm", "install", "--frozen-lockfile"];
   }
   if (manager === "bun") {
     return ["bun", "install"];
@@ -320,6 +330,18 @@ function managerInstallArgs(manager: "pnpm" | "bun" | "npm") {
 
 function normalizeTag(tag?: string) {
   return normalizePackageTagInput(tag, ["openclaw", DEFAULT_PACKAGE_NAME]) ?? "latest";
+}
+
+function parseAheadCommits(raw: string): AheadCommit[] {
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [sha, subject = ""] = line.split("\t", 2);
+      return { sha: sha?.trim() ?? "", subject: subject.trim() };
+    })
+    .filter((entry) => entry.sha.length > 0 && entry.subject.length > 0);
 }
 
 export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<UpdateRunResult> {
@@ -334,6 +356,7 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
   const progress = opts.progress;
   const steps: UpdateStepResult[] = [];
   const candidates = buildStartDirs(opts);
+  const stagingUpdate = isTruthyEnvValue(process.env.OPENCLAW_UPDATE_STAGING);
 
   let stepIndex = 0;
   let gitTotalSteps = 0;
@@ -475,6 +498,17 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
         step("git fetch", ["git", "-C", gitRoot, "fetch", "--all", "--prune", "--tags"], gitRoot),
       );
       steps.push(fetchStep);
+      if (fetchStep.exitCode !== 0) {
+        return {
+          status: "error",
+          mode: "git",
+          root: gitRoot,
+          reason: "fetch-failed",
+          before: { sha: beforeSha, version: beforeVersion },
+          steps,
+          durationMs: Date.now() - startedAt,
+        };
+      }
 
       const upstreamShaStep = await runStep(
         step(
@@ -628,6 +662,89 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
         };
       }
 
+      while (true) {
+        const aheadScanStep = await runStep(
+          step(
+            "local patch scan",
+            ["git", "-C", gitRoot, "log", "--reverse", "--format=%H%x09%s", `${selectedSha}..HEAD`],
+            gitRoot,
+          ),
+        );
+        steps.push(aheadScanStep);
+        if (aheadScanStep.exitCode !== 0) {
+          return {
+            status: "error",
+            mode: "git",
+            root: gitRoot,
+            reason: "local-patch-scan-failed",
+            before: { sha: beforeSha, version: beforeVersion },
+            steps,
+            durationMs: Date.now() - startedAt,
+          };
+        }
+
+        const obsoleteCommit = parseAheadCommits(aheadScanStep.stdoutTail ?? "").find((entry) =>
+          OBSOLETE_LOCAL_COMMIT_SUBJECTS.has(entry.subject),
+        );
+        if (!obsoleteCommit) {
+          break;
+        }
+
+        const parentStep = await runStep(
+          step(
+            `local patch parent (${obsoleteCommit.sha.slice(0, 8)})`,
+            ["git", "-C", gitRoot, "rev-parse", `${obsoleteCommit.sha}^`],
+            gitRoot,
+          ),
+        );
+        steps.push(parentStep);
+        const parentSha = parentStep.stdoutTail?.trim();
+        if (parentStep.exitCode !== 0 || !parentSha) {
+          return {
+            status: "error",
+            mode: "git",
+            root: gitRoot,
+            reason: "local-patch-parent-failed",
+            before: { sha: beforeSha, version: beforeVersion },
+            steps,
+            durationMs: Date.now() - startedAt,
+          };
+        }
+
+        const dropStep = await runStep(
+          step(
+            `drop obsolete local patch (${obsoleteCommit.sha.slice(0, 8)})`,
+            ["git", "-C", gitRoot, "rebase", "--onto", parentSha, obsoleteCommit.sha],
+            gitRoot,
+          ),
+        );
+        steps.push(dropStep);
+        if (dropStep.exitCode !== 0) {
+          const abortResult = await runCommand(["git", "-C", gitRoot, "rebase", "--abort"], {
+            cwd: gitRoot,
+            timeoutMs,
+          });
+          steps.push({
+            name: "git rebase --abort",
+            command: "git rebase --abort",
+            cwd: gitRoot,
+            durationMs: 0,
+            exitCode: abortResult.code,
+            stdoutTail: trimLogTail(abortResult.stdout, MAX_LOG_CHARS),
+            stderrTail: trimLogTail(abortResult.stderr, MAX_LOG_CHARS),
+          });
+          return {
+            status: "error",
+            mode: "git",
+            root: gitRoot,
+            reason: "obsolete-local-patch-drop-failed",
+            before: { sha: beforeSha, version: beforeVersion },
+            steps,
+            durationMs: Date.now() - startedAt,
+          };
+        }
+      }
+
       const rebaseStep = await runStep(
         step("git rebase", ["git", "-C", gitRoot, "rebase", selectedSha], gitRoot),
       );
@@ -770,12 +887,16 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
       };
     }
 
-    // Use --fix so that doctor auto-strips unknown config keys introduced by
-    // schema changes between versions, preventing a startup validation crash.
     const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorArgv = [doctorNodePath, doctorEntry, "doctor", "--non-interactive", "--fix"];
+    // Staging updates should validate doctor without touching real service state.
+    const doctorArgv = stagingUpdate
+      ? [doctorNodePath, doctorEntry, "doctor", "--non-interactive"]
+      : [doctorNodePath, doctorEntry, "doctor", "--non-interactive", "--fix"];
     const doctorStep = await runStep(
-      step("openclaw doctor", doctorArgv, gitRoot, { OPENCLAW_UPDATE_IN_PROGRESS: "1" }),
+      step("openclaw doctor", doctorArgv, gitRoot, {
+        OPENCLAW_UPDATE_IN_PROGRESS: "1",
+        ...(stagingUpdate ? { OPENCLAW_UPDATE_STAGING: "1" } : {}),
+      }),
     );
     steps.push(doctorStep);
 
@@ -829,6 +950,46 @@ export async function runGatewayUpdate(opts: UpdateRunnerOptions = {}): Promise<
           durationMs: Date.now() - startedAt,
         };
       }
+    }
+
+    const finalStatusStep = await runStep(
+      step(
+        "clean check (after)",
+        ["git", "-C", gitRoot, "status", "--porcelain", "--", ":!dist/control-ui/"],
+        gitRoot,
+      ),
+    );
+    steps.push(finalStatusStep);
+    if (finalStatusStep.exitCode !== 0) {
+      return {
+        status: "error",
+        mode: "git",
+        root: gitRoot,
+        reason: "clean-check-after-failed",
+        before: { sha: beforeSha, version: beforeVersion },
+        steps,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+    if (finalStatusStep.stdoutTail?.trim()) {
+      const afterShaStep = await runStep(
+        step("git rev-parse HEAD (after)", ["git", "-C", gitRoot, "rev-parse", "HEAD"], gitRoot),
+      );
+      steps.push(afterShaStep);
+      const afterVersion = await readPackageVersion(gitRoot);
+      return {
+        status: "error",
+        mode: "git",
+        root: gitRoot,
+        reason: "dirty-after-update",
+        before: { sha: beforeSha, version: beforeVersion },
+        after: {
+          sha: afterShaStep.stdoutTail?.trim() ?? null,
+          version: afterVersion,
+        },
+        steps,
+        durationMs: Date.now() - startedAt,
+      };
     }
 
     const failedStep = steps.find((s) => s.exitCode !== 0);

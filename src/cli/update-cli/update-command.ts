@@ -12,6 +12,7 @@ import {
 } from "../../config/config.js";
 import { formatConfigIssueLines } from "../../config/issue-format.js";
 import { resolveGatewayService } from "../../daemon/service.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
 import {
   channelToNpmTag,
   DEFAULT_GIT_CHANNEL,
@@ -685,6 +686,7 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
   suppressDeprecations();
   const invocationCwd = tryResolveInvocationCwd();
 
+  const stagingUpdate = isTruthyEnvValue(process.env.OPENCLAW_UPDATE_STAGING);
   const timeoutMs = parseTimeoutMsOrExit(opts.timeout);
   const shouldRestart = opts.restart !== false;
   if (timeoutMs === null) {
@@ -890,7 +892,7 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     configSnapshot.valid ? configSnapshot.config : undefined,
     process.env,
   );
-  if (shouldRestart) {
+  if (shouldRestart && !stagingUpdate) {
     try {
       const loaded = await resolveGatewayService().isLoaded({ env: process.env });
       if (loaded) {
@@ -955,6 +957,10 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
       );
     }
     defaultRuntime.exit(0);
+    return;
+  }
+
+  if (stagingUpdate) {
     return;
   }
 

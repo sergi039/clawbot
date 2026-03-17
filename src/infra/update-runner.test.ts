@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { withEnvAsync } from "../test-utils/env.js";
 import { pathExists } from "../utils.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
 import { runGatewayUpdate } from "./update-runner.js";
@@ -83,7 +82,7 @@ describe("runGatewayUpdate", () => {
       if (key === `git -C ${tempDir} checkout --detach ${params.stableTag}`) {
         return { stdout: "", stderr: "", code: 0 };
       }
-      if (key === "pnpm install") {
+      if (key === "pnpm install --frozen-lockfile") {
         return { stdout: "", stderr: "", code: 0 };
       }
       if (key === "pnpm build") {
@@ -269,12 +268,124 @@ describe("runGatewayUpdate", () => {
     expect(calls.some((call) => call.includes("rebase --abort"))).toBe(true);
   });
 
+  it("drops obsolete local pi-ai patch before rebasing onto upstream", async () => {
+    await setupGitCheckout({ packageManager: "pnpm@8.0.0" });
+    await setupUiIndex();
+    const upstreamSha = "upstream123";
+    const obsoleteSha = "1709ea1879a805b7c6cc82f393df1c9f29eb90c5";
+    const obsoleteParent = "248e1fa4eca5f3c1ba34989f7f6fcdab9258151e";
+    const { runner, calls } = createRunner({
+      ...buildGitWorktreeProbeResponses(),
+      [`git -C ${tempDir} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: {
+        stdout: "origin/main",
+      },
+      [`git -C ${tempDir} fetch --all --prune --tags`]: { stdout: "" },
+      [`git -C ${tempDir} rev-parse @{upstream}`]: { stdout: upstreamSha },
+      [`git -C ${tempDir} rev-list --max-count=10 ${upstreamSha}`]: { stdout: `${upstreamSha}\n` },
+      [`git -C ${tempDir} worktree add --detach ${path.join(os.tmpdir(), "ignored")} ${upstreamSha}`]:
+        { stdout: "" },
+      [`git -C ${tempDir} log --reverse --format=%H%x09%s ${upstreamSha}..HEAD`]: {
+        stdout: [
+          "cf83b51128812505048a5458daac441774bf1796\tfix(runtime): preserve local fallback, session, and update behavior",
+          "0a60b0fb5a6e80b3fed2abc6b50bb6f0de73abc0\tfix(mac): harden restart flow and track auto-update launcher",
+          "248e1fa4eca5f3c1ba34989f7f6fcdab9258151e\tfix(doctor): normalize cron and gateway health checks",
+          `${obsoleteSha}\tfix(pi-ai): adapt oauth imports and payload hooks`,
+          "7d0a537dee6de65a20f2d1a08e808d619113017b\tfix(cron): restore main-session scheduled delivery",
+          "01a3a77fb9bb130dd7755f3538c4b1341a3b15ca\tfix(errors): sanitize codex server failures",
+        ].join("\n"),
+      },
+      [`git -C ${tempDir} rev-parse ${obsoleteSha}^`]: { stdout: obsoleteParent },
+      [`git -C ${tempDir} rebase --onto ${obsoleteParent} ${obsoleteSha}`]: { stdout: "" },
+      [`git -C ${tempDir} rebase ${upstreamSha}`]: { stdout: "" },
+      "pnpm install --frozen-lockfile": { stdout: "" },
+      "pnpm build": { stdout: "" },
+      "pnpm ui:build": { stdout: "" },
+    });
+
+    const result = await runWithRunner(runner);
+
+    expect(result.status).toBe("ok");
+    expect(calls).toContain(
+      `git -C ${tempDir} log --reverse --format=%H%x09%s ${upstreamSha}..HEAD`,
+    );
+    expect(calls).toContain(`git -C ${tempDir} rev-parse ${obsoleteSha}^`);
+    expect(calls).toContain(`git -C ${tempDir} rebase --onto ${obsoleteParent} ${obsoleteSha}`);
+    expect(calls).toContain(`git -C ${tempDir} rebase ${upstreamSha}`);
+  });
+
+  it("drops obsolete local workspace lockfile patch before rebasing onto upstream", async () => {
+    await setupGitCheckout({ packageManager: "pnpm@8.0.0" });
+    await setupUiIndex();
+    const upstreamSha = "upstream123";
+    const obsoleteSha = "2e61f4e94f647b6f27a206f2957ca3dff34b7541";
+    const obsoleteParent = "1a7a87a368a98fa91451b0b2833f7de115a9161c";
+    const { runner, calls } = createRunner({
+      ...buildGitWorktreeProbeResponses(),
+      [`git -C ${tempDir} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: {
+        stdout: "origin/main",
+      },
+      [`git -C ${tempDir} fetch --all --prune --tags`]: { stdout: "" },
+      [`git -C ${tempDir} rev-parse @{upstream}`]: { stdout: upstreamSha },
+      [`git -C ${tempDir} rev-list --max-count=10 ${upstreamSha}`]: { stdout: `${upstreamSha}\n` },
+      [`git -C ${tempDir} worktree add --detach ${path.join(os.tmpdir(), "ignored")} ${upstreamSha}`]:
+        { stdout: "" },
+      [`git -C ${tempDir} log --reverse --format=%H%x09%s ${upstreamSha}..HEAD`]: {
+        stdout: [
+          "686e1cb20ce5329d069a55c58a85dc36e3829786\tfix(runtime): preserve local fallback, session, and update behavior",
+          "9a856b8bc019e4f84c5ac8d0723eb71ab359bd0d\tfix(mac): harden restart flow and track auto-update launcher",
+          "b0f871e254e7df5b897f88a9958a3ae672f8cc33\tfix(doctor): normalize cron and gateway health checks",
+          "e16a44a809ccee12cebaf59b4b8ea99e92dbb059\tfix(cron): restore main-session scheduled delivery",
+          "282d8804e2e8e0408ce488cfa568371181449a60\tfix(errors): sanitize codex server failures",
+          `${obsoleteSha}\tfix(update): sync workspace lockfile`,
+        ].join("\n"),
+      },
+      [`git -C ${tempDir} rev-parse ${obsoleteSha}^`]: { stdout: obsoleteParent },
+      [`git -C ${tempDir} rebase --onto ${obsoleteParent} ${obsoleteSha}`]: { stdout: "" },
+      [`git -C ${tempDir} rebase ${upstreamSha}`]: { stdout: "" },
+      "pnpm install --frozen-lockfile": { stdout: "" },
+      "pnpm build": { stdout: "" },
+      "pnpm ui:build": { stdout: "" },
+    });
+
+    const result = await runWithRunner(runner);
+
+    expect(result.status).toBe("ok");
+    expect(calls).toContain(
+      `git -C ${tempDir} log --reverse --format=%H%x09%s ${upstreamSha}..HEAD`,
+    );
+    expect(calls).toContain(`git -C ${tempDir} rev-parse ${obsoleteSha}^`);
+    expect(calls).toContain(`git -C ${tempDir} rebase --onto ${obsoleteParent} ${obsoleteSha}`);
+    expect(calls).toContain(`git -C ${tempDir} rebase ${upstreamSha}`);
+  });
+
+  it("returns error and stops early when git fetch fails on dev", async () => {
+    await setupGitCheckout();
+    const { runner, calls } = createRunner({
+      ...buildGitWorktreeProbeResponses(),
+      [`git -C ${tempDir} rev-parse --abbrev-ref --symbolic-full-name @{upstream}`]: {
+        stdout: "origin/main",
+      },
+      [`git -C ${tempDir} fetch --all --prune --tags`]: {
+        code: 1,
+        stderr: "cannot lock ref",
+      },
+    });
+
+    const result = await runWithRunner(runner);
+
+    expect(result.status).toBe("error");
+    expect(result.reason).toBe("fetch-failed");
+    expect(calls.some((call) => call.includes("rev-parse @{upstream}"))).toBe(false);
+    expect(calls.some((call) => call.includes("worktree add"))).toBe(false);
+    expect(calls.some((call) => call.includes("rebase"))).toBe(false);
+  });
+
   it("returns error and stops early when deps install fails", async () => {
     await setupGitCheckout({ packageManager: "pnpm@8.0.0" });
     const stableTag = "v1.0.1-1";
     const { runner, calls } = createRunner({
       ...buildStableTagResponses(stableTag),
-      "pnpm install": { code: 1, stderr: "ERR_PNPM_NETWORK" },
+      "pnpm install --frozen-lockfile": { code: 1, stderr: "ERR_PNPM_NETWORK" },
     });
 
     const result = await runWithRunner(runner, { channel: "stable" });
@@ -290,7 +401,7 @@ describe("runGatewayUpdate", () => {
     const stableTag = "v1.0.1-1";
     const { runner, calls } = createRunner({
       ...buildStableTagResponses(stableTag),
-      "pnpm install": { stdout: "" },
+      "pnpm install --frozen-lockfile": { stdout: "" },
       "pnpm build": { code: 1, stderr: "tsc: error TS2345" },
     });
 
@@ -298,8 +409,46 @@ describe("runGatewayUpdate", () => {
 
     expect(result.status).toBe("error");
     expect(result.reason).toBe("build-failed");
-    expect(calls.some((call) => call === "pnpm install")).toBe(true);
+    expect(calls.some((call) => call === "pnpm install --frozen-lockfile")).toBe(true);
     expect(calls.some((call) => call === "pnpm ui:build")).toBe(false);
+  });
+
+  it("returns dirty-after-update when tracked files change during update", async () => {
+    await setupGitCheckout({ packageManager: "pnpm@8.0.0" });
+    await setupUiIndex();
+    const stableTag = "v1.0.1-1";
+    const doctorNodePath = await resolveStableNodePath(process.execPath);
+    let statusChecks = 0;
+    const { runner } = createRunner({
+      ...buildStableTagResponses(stableTag),
+      "pnpm install --frozen-lockfile": { stdout: "" },
+      "pnpm build": { stdout: "" },
+      "pnpm ui:build": { stdout: "" },
+      [`${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`]: {
+        stdout: "",
+      },
+      [`git -C ${tempDir} rev-parse HEAD`]: { stdout: "def456" },
+    });
+
+    const result = await runWithCommand(
+      async (argv, options) => {
+        const key = argv.join(" ");
+        if (key === `git -C ${tempDir} status --porcelain -- :!dist/control-ui/`) {
+          statusChecks += 1;
+          return {
+            stdout: statusChecks === 1 ? "" : " M pnpm-lock.yaml\n",
+            stderr: "",
+            code: 0,
+          };
+        }
+        return runner(argv, options);
+      },
+      { channel: "stable" },
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.reason).toBe("dirty-after-update");
+    expect(result.after?.sha).toBe("def456");
   });
 
   it("uses stable tag when beta tag is older than release", async () => {
@@ -310,7 +459,7 @@ describe("runGatewayUpdate", () => {
     const doctorNodePath = await resolveStableNodePath(process.execPath);
     const { runner, calls } = createRunner({
       ...buildStableTagResponses(stableTag, { additionalTags: [betaTag] }),
-      "pnpm install": { stdout: "" },
+      "pnpm install --frozen-lockfile": { stdout: "" },
       "pnpm build": { stdout: "" },
       "pnpm ui:build": { stdout: "" },
       [`${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`]: {
@@ -650,7 +799,7 @@ describe("runGatewayUpdate", () => {
     const stableTag = "v1.0.1-1";
     const { runner } = createRunner({
       ...buildStableTagResponses(stableTag),
-      "pnpm install": { stdout: "" },
+      "pnpm install --frozen-lockfile": { stdout: "" },
       "pnpm build": { stdout: "" },
       "pnpm ui:build": { stdout: "" },
     });
